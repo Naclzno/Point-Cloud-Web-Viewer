@@ -1,0 +1,60 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# ROS 2 / colcon build outputs
+/build/
+/install/
+/log/
+rslidar_sdk-v1.5.19/build/
+rslidar_sdk-v1.5.19/install/
+rslidar_sdk-v1.5.19/log/
+
+# ROS bags, captures, and generated point cloud data
+*.bag
+*.db3
+*.mcap
+*.pcap
+*.pcd
+*.ply
+*.las
+*.laz
+rosbag2_*/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node / frontend dependencies and outputs
+node_modules/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+dist/
+coverage/
+storybook-static/
+storybook-screenshots/
+*.tsbuildinfo
+
+# Foxglove generated artifacts
+*.foxe
+.webpack/
+
+# Avoid committing nested or stale repository metadata
+**/.git
