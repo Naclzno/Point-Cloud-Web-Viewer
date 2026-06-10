@@ -8,10 +8,16 @@ Thumbs.db
 
 # Logs and temporary files
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 *.tmp
 *.temp
 tmp/
 temp/
+.cache/
+.parcel-cache/
 
 # ROS 2 / colcon build outputs
 /build/
@@ -20,6 +26,10 @@ temp/
 rslidar_sdk-v1.5.19/build/
 rslidar_sdk-v1.5.19/install/
 rslidar_sdk-v1.5.19/log/
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/compile_commands.json
 
 # ROS bags, captures, and generated point cloud data
 *.bag
@@ -37,6 +47,13 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+
 # Node / frontend dependencies and outputs
 node_modules/
 .pnp.*
@@ -47,6 +64,7 @@ node_modules/
 !.yarn/sdks
 !.yarn/versions
 dist/
+out/
 coverage/
 storybook-static/
 storybook-screenshots/
@@ -55,6 +73,7 @@ storybook-screenshots/
 # Foxglove generated artifacts
 *.foxe
 .webpack/
+web/.webpack/
 
 # Avoid committing nested or stale repository metadata
 **/.git

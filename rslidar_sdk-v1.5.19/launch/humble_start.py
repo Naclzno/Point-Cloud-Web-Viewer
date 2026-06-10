@@ -29,10 +29,11 @@ def generate_launch_description():
         os.environ['RMW_IMPLEMENTATION'] = 'rmw_cyclonedds_cpp'
         print(f"Environment Variable Set: RMW_IMPLEMENTATION={os.environ.get('RMW_IMPLEMENTATION')}")
 
-    rviz_config = get_package_share_directory('rslidar_sdk') + '/rviz/rviz2.rviz'
+    package_share = get_package_share_directory('rslidar_sdk')
+    rviz_config = package_share + '/rviz/rviz2.rviz'
+    config_file = package_share + '/config/config.yaml'
 
     return LaunchDescription([
-        Node(namespace='rslidar_sdk', package='rslidar_sdk', executable='rslidar_sdk_node', output='screen'),
+        Node(namespace='rslidar_sdk', package='rslidar_sdk', executable='rslidar_sdk_node', output='screen', parameters=[{'config_path': config_file}]),
         Node(namespace='rviz2', package='rviz2', executable='rviz2', arguments=['-d', rviz_config])
     ])
-

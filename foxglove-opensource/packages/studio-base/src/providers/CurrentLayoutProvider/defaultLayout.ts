@@ -20,6 +20,27 @@ export const defaultLayout: LayoutData =
   ({
     configById: {
       "3D!18i6zy7": {
+        followTf: "rslidar",
+        cameraState: {
+          distance: 30,
+          perspective: true,
+          phi: 60,
+          targetOffset: [0, 0, 0],
+          thetaOffset: 45,
+          fovy: 45,
+          near: 0.01,
+          far: 5000,
+          target: [0, 0, 0],
+          targetOrientation: [0, 0, 0, 1],
+        },
+        topics: {
+          "/rslidar_points": {
+            visible: true,
+            pointSize: 3,
+            colorMode: "flat",
+            flatColor: "#00ff66",
+          },
+        },
         layers: {
           "845139cb-26bc-40b3-8161-8ab60af4baf5": {
             visible: true,

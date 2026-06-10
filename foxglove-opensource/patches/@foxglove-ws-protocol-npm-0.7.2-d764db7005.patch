@@ -1,0 +1,78 @@
+diff --git a/dist/cjs/src/FoxgloveClient.js b/dist/cjs/src/FoxgloveClient.js
+index b5a7a48b80ff34874fa4aaf3946719ef0058f687..323027f538e0138fae7379842a464066b9885ece 100644
+--- a/dist/cjs/src/FoxgloveClient.js
++++ b/dist/cjs/src/FoxgloveClient.js
+@@ -6,7 +6,7 @@ const parse_1 = require("./parse");
+ const types_1 = require("./types");
+ const textEncoder = new TextEncoder();
+ class FoxgloveClient {
+-    static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++    static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+     #emitter = new eventemitter3_1.default();
+     #ws;
+     #nextSubscriptionId = 0;
+diff --git a/dist/cjs/src/FoxgloveServer.js b/dist/cjs/src/FoxgloveServer.js
+index 5aa13ef7858f9903392601663eda3edc7d3dc528..fd4cbc2810e47554a9a9b520182a6629eb3ad944 100644
+--- a/dist/cjs/src/FoxgloveServer.js
++++ b/dist/cjs/src/FoxgloveServer.js
+@@ -24,7 +24,7 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
+     fetchAsset: types_1.ServerCapability.assets,
+ };
+ class FoxgloveServer {
+-    static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++    static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+     name;
+     capabilities;
+     supportedEncodings;
+diff --git a/dist/esm/src/FoxgloveClient.js b/dist/esm/src/FoxgloveClient.js
+index 829c3955aaa674147e932b0cd224a14d46f27db9..b2cc4d94db4708f88a10a637fd2aecfb29adbcec 100644
+--- a/dist/esm/src/FoxgloveClient.js
++++ b/dist/esm/src/FoxgloveClient.js
+@@ -3,7 +3,7 @@ import { parseServerMessage } from "./parse";
+ import { BinaryOpcode, ClientBinaryOpcode, } from "./types";
+ const textEncoder = new TextEncoder();
+ export default class FoxgloveClient {
+-    static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++    static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+     #emitter = new EventEmitter();
+     #ws;
+     #nextSubscriptionId = 0;
+diff --git a/dist/esm/src/FoxgloveServer.js b/dist/esm/src/FoxgloveServer.js
+index 2ff0ae7900f59d853bf3cfdab80c9974f93b3cba..9e37667dd9b3ded6b27480e7c525653ce99891b3 100644
+--- a/dist/esm/src/FoxgloveServer.js
++++ b/dist/esm/src/FoxgloveServer.js
+@@ -21,7 +21,7 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
+     fetchAsset: ServerCapability.assets,
+ };
+ export default class FoxgloveServer {
+-    static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++    static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+     name;
+     capabilities;
+     supportedEncodings;
+diff --git a/src/FoxgloveClient.ts b/src/FoxgloveClient.ts
+index 3d33d291eef9c6f6bdcad6be6a6edd061f3a67f3..8198f95ca4888cd6ba480fc5cf8b4bf0cb016719 100644
+--- a/src/FoxgloveClient.ts
++++ b/src/FoxgloveClient.ts
+@@ -46,7 +46,7 @@ type EventTypes = {
+ const textEncoder = new TextEncoder();
+ 
+ export default class FoxgloveClient {
+-  static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++  static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+ 
+   #emitter = new EventEmitter<EventTypes>();
+   #ws: IWebSocket;
+diff --git a/src/FoxgloveServer.ts b/src/FoxgloveServer.ts
+index db3f250880ba0a777b0f543c4b957936326d0720..49d0e659446f615132fc097fa8128e5af9062881 100644
+--- a/src/FoxgloveServer.ts
++++ b/src/FoxgloveServer.ts
+@@ -92,7 +92,7 @@ const REQUIRED_CAPABILITY_BY_OPERATION: Record<
+ };
+ 
+ export default class FoxgloveServer {
+-  static SUPPORTED_SUBPROTOCOL = "foxglove.websocket.v1";
++  static SUPPORTED_SUBPROTOCOL = "foxglove.sdk.v1";
+ 
+   readonly name: string;
+   readonly capabilities: string[];

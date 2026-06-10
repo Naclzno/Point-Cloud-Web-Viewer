@@ -2804,6 +2804,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@foxglove/ws-protocol@patch:@foxglove/ws-protocol@npm%3A0.7.2#./patches/@foxglove-ws-protocol-npm-0.7.2-d764db7005.patch::locator=foxglove-studio%40workspace%3A.":
+  version: 0.7.2
+  resolution: "@foxglove/ws-protocol@patch:@foxglove/ws-protocol@npm%3A0.7.2#./patches/@foxglove-ws-protocol-npm-0.7.2-d764db7005.patch::version=0.7.2&hash=cef8ee&locator=foxglove-studio%40workspace%3A."
+  dependencies:
+    debug: ^4
+    eventemitter3: ^5.0.1
+    tslib: ^2.6.2
+  checksum: 5100bdfbf2e71f43649de96eda33db0f48b394f08a930de70bb286559c1ab4b516a74a6cdeb633f918c93075b86318788d0a719bc5b5ae09dc89ffe24eff96cd
+  languageName: node
+  linkType: hard
+
 "@gar/promisify@npm:^1.0.1":
   version: 1.1.3
   resolution: "@gar/promisify@npm:1.1.3"
@@ -8810,7 +8821,7 @@ __metadata:
 "comlink@github:foxglove/comlink#9181fa505671b35b1e66e0a8361a6fc1bdd03307":
   version: 4.4.1
   resolution: "comlink@https://github.com/foxglove/comlink.git#commit=9181fa505671b35b1e66e0a8361a6fc1bdd03307"
-  checksum: 1d89d5dee814e71f1cf5d46b5d4b8223bbc598d5b9a82ed53791b4127d35a3473d9cb1a4984e1d034ac6322de0a4dfb72d131529f870604efe79b42f4462dc98
+  checksum: 5e1d3e35fcf074e19eb55926386e37128621ab8395a8052e9b59b95d7272b6c880227ab7bd59c6465500e8a7216851bdf4232191c78bd294ef95ec3bc3406613
   languageName: node
   linkType: hard
 
