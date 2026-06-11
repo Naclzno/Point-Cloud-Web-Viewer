@@ -34,7 +34,7 @@ export const defaultLayout: LayoutData =
           targetOrientation: [0, 0, 0, 1],
         },
         topics: {
-          "/rslidar_points": {
+          "/rslidar_points_web": {
             visible: true,
             pointSize: 3,
             colorMode: "flat",

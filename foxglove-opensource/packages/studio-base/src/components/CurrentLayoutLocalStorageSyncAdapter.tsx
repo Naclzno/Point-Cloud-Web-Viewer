@@ -24,6 +24,44 @@ function selectLayoutData(state: LayoutState) {
 
 const log = Log.getLogger(__filename);
 
+function migrateRslidarWebTopic(layoutData: LayoutData): LayoutData {
+  const configById = { ...layoutData.configById };
+  let changed = false;
+
+  for (const [panelId, config] of Object.entries(configById)) {
+    const maybeConfig = config as
+      | {
+          followTf?: string;
+          topics?: Record<string, unknown>;
+        }
+      | undefined;
+    const topics = maybeConfig?.topics;
+    if (topics == undefined || !("/rslidar_points" in topics)) {
+      continue;
+    }
+
+    const oldTopicConfig = topics["/rslidar_points"];
+    const migratedTopics = { ...topics };
+    migratedTopics["/rslidar_points_web"] = {
+      ...(oldTopicConfig != undefined && typeof oldTopicConfig === "object" ? oldTopicConfig : {}),
+      visible: true,
+      pointSize: 3,
+      colorMode: "flat",
+      flatColor: "#00ff66",
+    };
+    delete migratedTopics["/rslidar_points"];
+
+    configById[panelId] = {
+      ...(maybeConfig as object),
+      followTf: maybeConfig?.followTf ?? "rslidar",
+      topics: migratedTopics,
+    };
+    changed = true;
+  }
+
+  return changed ? { ...layoutData, configById } : layoutData;
+}
+
 export function CurrentLayoutLocalStorageSyncAdapter(): JSX.Element {
   const { selectedSource } = usePlayerSelection();
 
@@ -59,8 +97,10 @@ export function CurrentLayoutLocalStorageSyncAdapter(): JSX.Element {
       log.debug("No layout found in local storage. Using default layout.");
     }
 
-    const layoutData = migratePanelsState(
-      serializedLayoutData ? (JSON.parse(serializedLayoutData) as LayoutData) : defaultLayout,
+    const layoutData = migrateRslidarWebTopic(
+      migratePanelsState(
+        serializedLayoutData ? (JSON.parse(serializedLayoutData) as LayoutData) : defaultLayout,
+      ),
     );
     setCurrentLayout({ data: layoutData });
   }, [setCurrentLayout]);

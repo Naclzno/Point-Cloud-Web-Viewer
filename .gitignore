@@ -26,6 +26,9 @@ temp/
 rslidar_sdk-v1.5.19/build/
 rslidar_sdk-v1.5.19/install/
 rslidar_sdk-v1.5.19/log/
+pointcloud_web_tools/build/
+pointcloud_web_tools/install/
+pointcloud_web_tools/log/
 **/CMakeCache.txt
 **/CMakeFiles/
 **/cmake_install.cmake
