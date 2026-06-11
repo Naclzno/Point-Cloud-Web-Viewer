@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -59,6 +60,19 @@ struct VoxelKeyHash
     seed ^= std::hash<int32_t>{}(key.z) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
     return seed;
   }
+};
+
+struct PointXYZ
+{
+  float x = 0.0F;
+  float y = 0.0F;
+  float z = 0.0F;
+};
+
+struct MapPoint
+{
+  PointXYZ point;
+  rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
 };
 
 bool host_is_bigendian()
@@ -149,6 +163,9 @@ public:
     input_topic_ = declare_parameter<std::string>("input_topic", "/rslidar_points");
     publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 5.0);
     voxel_size_ = std::max(0.001, declare_parameter<double>("voxel_size", 0.10));
+    accumulate_map_ = declare_parameter<bool>("accumulate_map", false);
+    map_voxel_size_ = std::max(0.001, declare_parameter<double>("map_voxel_size", voxel_size_));
+    map_window_seconds_ = std::max(0.0, declare_parameter<double>("map_window_seconds", 0.0));
     address_ = declare_parameter<std::string>("address", "0.0.0.0");
     port_ = static_cast<uint16_t>(std::max<int64_t>(1, declare_parameter<int64_t>("port", 8766)));
 
@@ -164,8 +181,9 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Point cloud WebSocket server listening on ws://%s:%u, input_topic=%s, publish_rate_hz=%.3f, voxel_size=%.3f",
-      address_.c_str(), port_, input_topic_.c_str(), publish_rate_hz_, voxel_size_);
+      "Point cloud WebSocket server listening on ws://%s:%u, input_topic=%s, publish_rate_hz=%.3f, voxel_size=%.3f, accumulate_map=%s, map_voxel_size=%.3f, map_window_seconds=%.3f",
+      address_.c_str(), port_, input_topic_.c_str(), publish_rate_hz_, voxel_size_,
+      accumulate_map_ ? "true" : "false", map_voxel_size_, map_window_seconds_);
   }
 
   ~PointCloudWsServer() override
@@ -236,9 +254,27 @@ private:
         continue;
       }
 
-      append_float(*payload, static_cast<float>(x));
-      append_float(*payload, static_cast<float>(y));
-      append_float(*payload, static_cast<float>(z));
+      const PointXYZ point{
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<float>(z)};
+      if (accumulate_map_) {
+        const VoxelKey map_key{
+          static_cast<int32_t>(std::floor(x / map_voxel_size_)),
+          static_cast<int32_t>(std::floor(y / map_voxel_size_)),
+          static_cast<int32_t>(std::floor(z / map_voxel_size_))};
+        auto [entry, inserted] = map_points_.try_emplace(map_key, MapPoint{point, now});
+        if (!inserted) {
+          entry->second.last_seen = now;
+        }
+      } else {
+        append_point(*payload, point);
+      }
+    }
+
+    if (accumulate_map_) {
+      prune_map(now);
+      payload = build_map_payload();
     }
 
     {
@@ -281,6 +317,39 @@ private:
     }
   }
 
+  void append_point(std::vector<uint8_t> & data, const PointXYZ & point) const
+  {
+    append_float(data, point.x);
+    append_float(data, point.y);
+    append_float(data, point.z);
+  }
+
+  std::shared_ptr<std::vector<uint8_t>> build_map_payload() const
+  {
+    auto payload = std::make_shared<std::vector<uint8_t>>();
+    payload->reserve(map_points_.size() * 3 * sizeof(float));
+    for (const auto & entry : map_points_) {
+      append_point(*payload, entry.second.point);
+    }
+    return payload;
+  }
+
+  void prune_map(const rclcpp::Time & now)
+  {
+    if (map_window_seconds_ <= 0.0) {
+      return;
+    }
+
+    const auto window = rclcpp::Duration::from_seconds(map_window_seconds_);
+    for (auto it = map_points_.begin(); it != map_points_.end();) {
+      if (now - it->second.last_seen > window) {
+        it = map_points_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   void run_session(tcp::socket socket)
   {
     try {
@@ -318,8 +387,12 @@ private:
   uint16_t port_ = 8766;
   double publish_rate_hz_ = 5.0;
   double voxel_size_ = 0.10;
+  bool accumulate_map_ = false;
+  double map_voxel_size_ = 0.10;
+  double map_window_seconds_ = 0.0;
   rclcpp::Time last_publish_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Duration min_period_{0, 0};
+  std::unordered_map<VoxelKey, MapPoint, VoxelKeyHash> map_points_;
 
   std::unique_ptr<boost::asio::io_context> io_context_;
   std::unique_ptr<tcp::acceptor> acceptor_;

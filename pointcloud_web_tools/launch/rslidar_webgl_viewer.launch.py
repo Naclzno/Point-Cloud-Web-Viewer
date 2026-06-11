@@ -1,9 +1,10 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
@@ -18,9 +19,15 @@ def generate_launch_description():
     record_bag = LaunchConfiguration("record_bag")
     bag_output = LaunchConfiguration("bag_output")
     bag_duration = LaunchConfiguration("bag_duration")
+    use_rviz = LaunchConfiguration("use_rviz")
+
+    rslidar_share = get_package_share_directory("rslidar_sdk")
+    config_file = rslidar_share + "/config/config.yaml"
+    rviz_config = rslidar_share + "/rviz/rviz2.rviz"
 
     return LaunchDescription(
         [
+            SetEnvironmentVariable("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp"),
             DeclareLaunchArgument("input_topic", default_value="/rslidar_points"),
             DeclareLaunchArgument("publish_rate_hz", default_value="5.0"),
             DeclareLaunchArgument("voxel_size", default_value="0.10"),
@@ -29,9 +36,18 @@ def generate_launch_description():
             DeclareLaunchArgument("map_window_seconds", default_value="0.0"),
             DeclareLaunchArgument("ws_port", default_value="8766"),
             DeclareLaunchArgument("ws_address", default_value="0.0.0.0"),
-            DeclareLaunchArgument("record_bag", default_value="true"),
+            DeclareLaunchArgument("record_bag", default_value="false"),
             DeclareLaunchArgument("bag_output", default_value="/tmp/rslidar_recent_bag"),
             DeclareLaunchArgument("bag_duration", default_value="3.0"),
+            DeclareLaunchArgument("use_rviz", default_value="false"),
+            Node(
+                namespace="rslidar_sdk",
+                package="rslidar_sdk",
+                executable="rslidar_sdk_node",
+                name="rslidar_sdk_node",
+                output="screen",
+                parameters=[{"config_path": config_file}],
+            ),
             Node(
                 package="pointcloud_web_tools",
                 executable="pointcloud_ws_server",
@@ -67,6 +83,14 @@ def generate_launch_description():
                 ],
                 output="screen",
                 condition=IfCondition(record_bag),
+            ),
+            Node(
+                package="rviz2",
+                executable="rviz2",
+                name="rviz2",
+                arguments=["-d", rviz_config],
+                output="screen",
+                condition=IfCondition(use_rviz),
             ),
         ]
     )

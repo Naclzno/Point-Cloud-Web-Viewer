@@ -29,6 +29,11 @@ rslidar_sdk-v1.5.19/log/
 pointcloud_web_tools/build/
 pointcloud_web_tools/install/
 pointcloud_web_tools/log/
+unitree_lidar_ros2/build/
+unitree_lidar_ros2/install/
+unitree_lidar_ros2/log/
+unitree_lidar_sdk/build/
+unitree_lidar_sdk/bin/
 **/CMakeCache.txt
 **/CMakeFiles/
 **/cmake_install.cmake
