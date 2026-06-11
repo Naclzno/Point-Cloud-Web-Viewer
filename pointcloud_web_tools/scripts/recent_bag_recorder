@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Continuously keep only the most recent short rosbag recording."
+    )
+    parser.add_argument("--topic", default="/rslidar_points")
+    parser.add_argument("--output", default="/tmp/rslidar_recent_bag")
+    parser.add_argument("--duration", type=float, default=3.0)
+    parser.add_argument("--storage", default="sqlite3")
+    return parser.parse_args()
+
+
+def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.send_signal(signal.SIGINT)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.duration <= 0:
+        print("duration must be positive", file=sys.stderr)
+        return 2
+
+    output = Path(args.output)
+    tmp_output = output.with_name("recording_next")
+    stop_requested = False
+    active_process: subprocess.Popen[bytes] | None = None
+
+    def handle_signal(signum: int, _frame) -> None:
+        nonlocal stop_requested, active_process
+        stop_requested = True
+        if active_process is not None:
+            stop_process(active_process)
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    while not stop_requested:
+        shutil.rmtree(tmp_output, ignore_errors=True)
+
+        command = [
+            "ros2",
+            "bag",
+            "record",
+            args.topic,
+            "-o",
+            str(tmp_output),
+            "-s",
+            args.storage,
+        ]
+        active_process = subprocess.Popen(command)
+
+        deadline = time.monotonic() + args.duration
+        while not stop_requested and time.monotonic() < deadline:
+            if active_process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        stop_process(active_process)
+        active_process = None
+
+        if stop_requested:
+            break
+
+        if tmp_output.exists():
+            old_output = output.with_name(output.name + ".old")
+            shutil.rmtree(old_output, ignore_errors=True)
+            if output.exists():
+                output.rename(old_output)
+            tmp_output.rename(output)
+            shutil.rmtree(old_output, ignore_errors=True)
+
+    shutil.rmtree(tmp_output, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
