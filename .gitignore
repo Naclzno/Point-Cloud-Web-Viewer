@@ -54,6 +54,7 @@ rosbag2_*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
 
 # Local secrets and machine-specific config
 .env
@@ -82,6 +83,9 @@ storybook-screenshots/
 *.foxe
 .webpack/
 web/.webpack/
+
+# Stockpile volume generated artifacts
+stockpile-volume-computation/outputs/
 
 # Avoid committing nested or stale repository metadata
 **/.git

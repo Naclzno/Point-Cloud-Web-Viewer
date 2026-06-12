@@ -27,13 +27,53 @@ Enable accumulated mapping when the LiDAR is fixed:
 ```bash
 ros2 launch pointcloud_web_tools rslidar_webgl_viewer.launch.py \
   accumulate_map:=true \
-  map_voxel_size:=0.05
+  map_window_seconds:=15 \
+  map_voxel_size:=0.10
 ```
 
 `accumulate_map:=true` sends the accumulated voxel map instead of only the latest
 frame. `map_voxel_size` controls map resolution. `map_window_seconds:=0.0` keeps
 the map until the process exits; set it to a number of seconds to keep a sliding
 time window of recently observed voxels.
+
+## Web volume workflow
+
+For an interactive stockpile measurement, launch the WebSocket server with
+`accumulate_map:=true` and a finite `map_window_seconds`. The browser receives
+that sliding-window map, so the volume is computed from recent accumulated points
+instead of a single LiDAR frame.
+
+In the page:
+
+1. Click `Fit ground` after the warehouse floor is visible. The fitted plane is
+   sent to `pointcloud_ws_server` and shown as `ground_plane_a/b/c/d` launch
+   parameters.
+2. Click `ROI`, then click two points in the cloud to define the opposite
+   corners of the stockpile area.
+3. Click `Calculate` to send the ROI to `pointcloud_ws_server` and start
+   server-side volume output.
+4. Click `Undo` to remove the ROI, restore the full point cloud, and disable
+   server-side volume output.
+
+Enable stockpile volume display:
+
+```bash
+ros2 launch pointcloud_web_tools rslidar_webgl_viewer.launch.py \
+  accumulate_map:=true \
+  map_window_seconds:=15 \
+  map_voxel_size:=0.10 \
+  enable_volume:=true \
+  volume_roi_min_x:=-10 \
+  volume_roi_max_x:=10 \
+  volume_roi_min_y:=-10 \
+  volume_roi_max_y:=10
+```
+
+The volume estimator uses the accumulated map, a fixed ground plane, and a 2D
+height grid. `map_voxel_size` controls both accumulated-map resolution and volume
+grid size. The default ground plane is `z=0`, encoded as
+`ground_plane_a:=0 ground_plane_b:=0 ground_plane_c:=1 ground_plane_d:=0`.
+Set these plane coefficients after calibrating the warehouse floor.
 
 Start the RS-LiDAR pipeline:
 

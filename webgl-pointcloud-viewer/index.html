@@ -27,6 +27,7 @@
         position: fixed;
         top: 12px;
         left: 12px;
+        right: 12px;
         display: flex;
         align-items: center;
         gap: 14px;
@@ -39,11 +40,35 @@
         backdrop-filter: blur(8px);
       }
 
+      .telemetry {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+
+      .actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+
+      .readouts {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-width: 0;
+        flex: 0 1 auto;
+      }
+
       .status {
         display: flex;
         align-items: center;
         gap: 8px;
-        min-width: 150px;
+        flex: 0 0 auto;
         font-size: 13px;
         white-space: nowrap;
       }
@@ -75,27 +100,80 @@
         width: 130px;
       }
 
+      button {
+        height: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #e7edf3;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      button.active {
+        border-color: #38bdf8;
+        color: #e0f2fe;
+      }
+
       .metrics {
         font-variant-numeric: tabular-nums;
         font-size: 12px;
         color: #b7c2cc;
         white-space: nowrap;
       }
+
+      .volume {
+        font-variant-numeric: tabular-nums;
+        font-size: 13px;
+        color: #f8fafc;
+        white-space: nowrap;
+        text-align: right;
+      }
+
+      .calibration {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        padding: 8px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 6px;
+        background: rgba(9, 13, 18, 0.86);
+        color: #b7c2cc;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.45;
+      }
     </style>
   </head>
   <body>
     <canvas id="viewer"></canvas>
     <div class="toolbar">
-      <div class="status">
-        <span id="statusDot" class="dot"></span>
-        <span id="statusText">Connecting</span>
+      <div class="telemetry">
+        <div class="status">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">Connecting</span>
+        </div>
+        <label>
+          Point size
+          <input id="pointSize" type="range" min="1" max="8" step="0.5" value="2.5" />
+        </label>
+        <div class="readouts">
+          <div id="metrics" class="metrics">0 points</div>
+          <div id="volume" class="volume">Volume: -- m³</div>
+        </div>
       </div>
-      <label>
-        Point size
-        <input id="pointSize" type="range" min="1" max="8" step="0.5" value="2.5" />
-      </label>
-      <div id="metrics" class="metrics">0 points</div>
+      <div class="actions">
+        <button id="fitGround" type="button">Fit ground</button>
+        <button id="selectRoi" type="button">ROI</button>
+        <button id="calculateVolume" type="button">Calculate</button>
+        <button id="undoRoi" type="button">Undo</button>
+      </div>
     </div>
+    <div id="calibration" class="calibration">Ground: z=0 · ROI: none</div>
 
     <script>
       const canvas = document.getElementById("viewer");
@@ -103,6 +181,12 @@
       const statusText = document.getElementById("statusText");
       const pointSizeInput = document.getElementById("pointSize");
       const metrics = document.getElementById("metrics");
+      const volumeDisplay = document.getElementById("volume");
+      const fitGroundButton = document.getElementById("fitGround");
+      const selectRoiButton = document.getElementById("selectRoi");
+      const calculateVolumeButton = document.getElementById("calculateVolume");
+      const undoRoiButton = document.getElementById("undoRoi");
+      const calibrationDisplay = document.getElementById("calibration");
       const gl = canvas.getContext("webgl", { antialias: false, alpha: false });
 
       if (!gl) {
@@ -177,6 +261,14 @@
       let frameCount = 0;
       let lastMetricTime = performance.now();
       let fps = 0;
+      let latestPoints = new Float32Array();
+      let displayedPoints = new Float32Array();
+      let roi = null;
+      let roiSelectionActive = false;
+      let roiFirstCorner = null;
+      let groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+      let currentSocket = null;
+      let volumeCalculationActive = false;
 
       function resizeCanvas() {
         const dpr = window.devicePixelRatio || 1;
@@ -248,6 +340,266 @@
         return multiply(projection, multiply(translate(-distance), multiply(rotateX(pitch), rotateZ(yaw))));
       }
 
+      function updateCalibrationDisplay() {
+        const { a, b, c, d } = groundPlane;
+        const groundText =
+          `ground_plane_a:=${a.toFixed(6)} ground_plane_b:=${b.toFixed(6)} ` +
+          `ground_plane_c:=${c.toFixed(6)} ground_plane_d:=${d.toFixed(6)}`;
+        const roiText = roi
+          ? `ROI x=[${roi.minX.toFixed(2)}, ${roi.maxX.toFixed(2)}] y=[${roi.minY.toFixed(2)}, ${roi.maxY.toFixed(2)}]`
+          : "ROI: none";
+        calibrationDisplay.textContent = `${groundText} · ${roiText}`;
+      }
+
+      function sendCalibrationToServer(enableVolume = volumeCalculationActive) {
+        if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        const sendRoi = Boolean(enableVolume && roi);
+        currentSocket.send(
+          JSON.stringify({
+            type: "calibration",
+            ground_a: groundPlane.a,
+            ground_b: groundPlane.b,
+            ground_c: groundPlane.c,
+            ground_d: groundPlane.d,
+            has_roi: sendRoi,
+            roi_min_x: roi ? roi.minX : 0,
+            roi_max_x: roi ? roi.maxX : 0,
+            roi_min_y: roi ? roi.minY : 0,
+            roi_max_y: roi ? roi.maxY : 0,
+          }),
+        );
+      }
+
+      function pointInRoi(x, y) {
+        return !roi || (x >= roi.minX && x <= roi.maxX && y >= roi.minY && y <= roi.maxY);
+      }
+
+      function updatePointBuffer(points) {
+        pointCount = Math.floor(points.length / 3);
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, points, gl.DYNAMIC_DRAW);
+      }
+
+      function updateDisplayedPoints() {
+        if (!roi) {
+          displayedPoints = latestPoints;
+          updatePointBuffer(displayedPoints);
+          computeBrowserVolume(false);
+          return;
+        }
+
+        let kept = 0;
+        for (let i = 0; i < latestPoints.length; i += 3) {
+          if (pointInRoi(latestPoints[i], latestPoints[i + 1])) {
+            kept++;
+          }
+        }
+
+        const filtered = new Float32Array(kept * 3);
+        let out = 0;
+        for (let i = 0; i < latestPoints.length; i += 3) {
+          const x = latestPoints[i];
+          const y = latestPoints[i + 1];
+          if (!pointInRoi(x, y)) {
+            continue;
+          }
+          filtered[out++] = x;
+          filtered[out++] = y;
+          filtered[out++] = latestPoints[i + 2];
+        }
+        displayedPoints = filtered;
+        updatePointBuffer(displayedPoints);
+        computeBrowserVolume(false);
+      }
+
+      function normalizePlane(plane) {
+        const length = Math.hypot(plane.a, plane.b, plane.c);
+        if (!Number.isFinite(length) || length < 1e-6) {
+          return null;
+        }
+        let normalized = {
+          a: plane.a / length,
+          b: plane.b / length,
+          c: plane.c / length,
+          d: plane.d / length,
+        };
+        if (normalized.c < 0) {
+          normalized = {
+            a: -normalized.a,
+            b: -normalized.b,
+            c: -normalized.c,
+            d: -normalized.d,
+          };
+        }
+        return normalized;
+      }
+
+      function planeFromPoints(p1, p2, p3) {
+        const ux = p2.x - p1.x;
+        const uy = p2.y - p1.y;
+        const uz = p2.z - p1.z;
+        const vx = p3.x - p1.x;
+        const vy = p3.y - p1.y;
+        const vz = p3.z - p1.z;
+        const plane = normalizePlane({
+          a: uy * vz - uz * vy,
+          b: uz * vx - ux * vz,
+          c: ux * vy - uy * vx,
+          d: 0,
+        });
+        if (!plane) {
+          return null;
+        }
+        plane.d = -(plane.a * p1.x + plane.b * p1.y + plane.c * p1.z);
+        return plane;
+      }
+
+      function fitGroundPlane() {
+        const source = roi ? displayedPoints : latestPoints;
+        const totalPoints = Math.floor(source.length / 3);
+        if (totalPoints < 30) {
+          return;
+        }
+
+        const sampleCount = Math.min(3500, totalPoints);
+        const stride = Math.max(1, Math.floor(totalPoints / sampleCount));
+        const samples = [];
+        for (let i = 0; i < totalPoints && samples.length < sampleCount; i += stride) {
+          const offset = i * 3;
+          samples.push({ x: source[offset], y: source[offset + 1], z: source[offset + 2] });
+        }
+
+        let bestPlane = null;
+        let bestScore = -1;
+        const threshold = 0.08;
+        const iterations = 140;
+        for (let i = 0; i < iterations; i++) {
+          const p1 = samples[Math.floor(Math.random() * samples.length)];
+          const p2 = samples[Math.floor(Math.random() * samples.length)];
+          const p3 = samples[Math.floor(Math.random() * samples.length)];
+          const plane = planeFromPoints(p1, p2, p3);
+          if (!plane || plane.c < 0.72) {
+            continue;
+          }
+
+          let inliers = 0;
+          for (const point of samples) {
+            const distanceToPlane = Math.abs(
+              plane.a * point.x + plane.b * point.y + plane.c * point.z + plane.d,
+            );
+            if (distanceToPlane <= threshold) {
+              inliers++;
+            }
+          }
+
+          const score = inliers * (0.35 + 0.65 * plane.c);
+          if (score > bestScore) {
+            bestScore = score;
+            bestPlane = plane;
+          }
+        }
+
+        if (bestPlane) {
+          const offsets = [];
+          for (const point of samples) {
+            const distanceToPlane = Math.abs(
+              bestPlane.a * point.x + bestPlane.b * point.y + bestPlane.c * point.z + bestPlane.d,
+            );
+            if (distanceToPlane <= threshold) {
+              offsets.push(-(bestPlane.a * point.x + bestPlane.b * point.y + bestPlane.c * point.z));
+            }
+          }
+          if (offsets.length > 0) {
+            offsets.sort((a, b) => a - b);
+            bestPlane.d = offsets[Math.floor(offsets.length / 2)];
+          }
+          groundPlane = bestPlane;
+          updateCalibrationDisplay();
+          sendCalibrationToServer();
+          computeBrowserVolume(true);
+        }
+      }
+
+      function computeBrowserVolume(force) {
+        void force;
+      }
+
+      function projectPoint(matrix, x, y, z) {
+        const clipX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+        const clipY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+        const clipW = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+        if (clipW <= 0.001) {
+          return null;
+        }
+        const ndcX = clipX / clipW;
+        const ndcY = clipY / clipW;
+        if (ndcX < -1.1 || ndcX > 1.1 || ndcY < -1.1 || ndcY > 1.1) {
+          return null;
+        }
+        return {
+          x: ((ndcX + 1) * canvas.clientWidth) / 2,
+          y: ((1 - ndcY) * canvas.clientHeight) / 2,
+        };
+      }
+
+      function nearestPointOnScreen(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const targetX = clientX - rect.left;
+        const targetY = clientY - rect.top;
+        const totalPoints = Math.floor(displayedPoints.length / 3);
+        const stride = Math.max(1, Math.floor(totalPoints / 80000));
+        const matrix = viewMatrix();
+        let best = null;
+        let bestDistanceSq = 24 * 24;
+
+        for (let i = 0; i < totalPoints; i += stride) {
+          const offset = i * 3;
+          const x = displayedPoints[offset];
+          const y = displayedPoints[offset + 1];
+          const z = displayedPoints[offset + 2];
+          const projected = projectPoint(matrix, x, y, z);
+          if (!projected) {
+            continue;
+          }
+          const dx = projected.x - targetX;
+          const dy = projected.y - targetY;
+          const distanceSq = dx * dx + dy * dy;
+          if (distanceSq < bestDistanceSq) {
+            bestDistanceSq = distanceSq;
+            best = { x, y, z };
+          }
+        }
+        return best;
+      }
+
+      function selectRoiCorner(event) {
+        const point = nearestPointOnScreen(event.clientX, event.clientY);
+        if (!point) {
+          return;
+        }
+        if (!roiFirstCorner) {
+          roiFirstCorner = point;
+          calibrationDisplay.textContent = `ROI first corner: x=${point.x.toFixed(2)} y=${point.y.toFixed(2)}`;
+          return;
+        }
+        roi = {
+          minX: Math.min(roiFirstCorner.x, point.x),
+          maxX: Math.max(roiFirstCorner.x, point.x),
+          minY: Math.min(roiFirstCorner.y, point.y),
+          maxY: Math.max(roiFirstCorner.y, point.y),
+        };
+        roiFirstCorner = null;
+        roiSelectionActive = false;
+        volumeCalculationActive = false;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        updateCalibrationDisplay();
+        volumeDisplay.textContent = "Volume: -- m³";
+        updateDisplayedPoints();
+      }
+
       function render(now) {
         resizeCanvas();
         gl.clearColor(0.043, 0.059, 0.078, 1);
@@ -274,6 +626,7 @@
         const defaultUrl = `ws://${location.hostname || "127.0.0.1"}:8766`;
         const url = new URLSearchParams(location.search).get("ws") || defaultUrl;
         const socket = new WebSocket(url);
+        currentSocket = socket;
         socket.binaryType = "arraybuffer";
 
         statusDot.className = "dot";
@@ -282,19 +635,37 @@
         socket.onopen = () => {
           statusDot.className = "dot connected";
           statusText.textContent = "Connected";
+          sendCalibrationToServer();
         };
 
         socket.onmessage = (event) => {
           const data = event.data;
+          if (typeof data === "string") {
+            try {
+              const message = JSON.parse(data);
+              if (message.type === "volume") {
+                const volume = Number(message.volume_m3);
+                const cells = Number(message.cells || 0);
+                const windowSeconds = Number(message.window_seconds || 0);
+                const windowText = windowSeconds > 0 ? ` · ${windowSeconds.toFixed(0)}s` : "";
+                volumeDisplay.textContent = `Volume: ${volume.toFixed(2)} m³ · ${cells.toLocaleString()} cells${windowText} · server`;
+              }
+            } catch {
+              return;
+            }
+            return;
+          }
           if (!(data instanceof ArrayBuffer) || data.byteLength === 0) {
             return;
           }
-          pointCount = Math.floor(data.byteLength / 12);
-          gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+          latestPoints = new Float32Array(data);
+          updateDisplayedPoints();
         };
 
         socket.onclose = () => {
+          if (currentSocket === socket) {
+            currentSocket = null;
+          }
           statusDot.className = "dot error";
           statusText.textContent = "Disconnected";
           setTimeout(connect, 1000);
@@ -308,6 +679,10 @@
       }
 
       canvas.addEventListener("pointerdown", (event) => {
+        if (roiSelectionActive) {
+          selectRoiCorner(event);
+          return;
+        }
         dragging = true;
         lastX = event.clientX;
         lastY = event.clientY;
@@ -339,7 +714,40 @@
         { passive: false },
       );
 
+      fitGroundButton.addEventListener("click", fitGroundPlane);
+
+      selectRoiButton.addEventListener("click", () => {
+        roiSelectionActive = !roiSelectionActive;
+        roiFirstCorner = null;
+        selectRoiButton.classList.toggle("active", roiSelectionActive);
+        updateCalibrationDisplay();
+      });
+
+      calculateVolumeButton.addEventListener("click", () => {
+        if (!roi) {
+          volumeDisplay.textContent = "Volume: -- m³";
+          return;
+        }
+        volumeCalculationActive = true;
+        calculateVolumeButton.classList.add("active");
+        sendCalibrationToServer(true);
+      });
+
+      undoRoiButton.addEventListener("click", () => {
+        roi = null;
+        roiFirstCorner = null;
+        roiSelectionActive = false;
+        volumeCalculationActive = false;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        volumeDisplay.textContent = "Volume: -- m³";
+        updateCalibrationDisplay();
+        sendCalibrationToServer(false);
+        updateDisplayedPoints();
+      });
+
       window.addEventListener("resize", resizeCanvas);
+      updateCalibrationDisplay();
       connect();
       requestAnimationFrame(render);
     </script>
