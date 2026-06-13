@@ -48,12 +48,37 @@ In the page:
 1. Click `Fit ground` after the warehouse floor is visible. The fitted plane is
    sent to `pointcloud_ws_server` and shown as `ground_plane_a/b/c/d` launch
    parameters.
-2. Click `ROI`, then click two points in the cloud to define the opposite
-   corners of the stockpile area.
-3. Click `Calculate` to send the ROI to `pointcloud_ws_server` and start
-   server-side volume output.
-4. Click `Undo` to remove the ROI, restore the full point cloud, and disable
-   server-side volume output.
+2. Click `ROI` first if you want to limit the search area, then click four
+   corner points on the fixed `z=0` XY plane in clockwise or counter-clockwise
+   order. ROI clicks do not need to hit existing point-cloud points. Repeat this
+   to add multiple stockpile search areas. Click `Auto pile` to select the
+   largest connected elevated stockpile region inside each ROI. If no ROI is
+   active, `Auto pile` searches the full point cloud. The full point cloud
+   remains visible while adding ROIs; ROI corner points and outlines are drawn in
+   the viewer. Filtered display starts after `Auto pile` or `Calculate`.
+3. Click `Calculate` to compute total volume in the browser for all selected
+   four-corner ROIs or all `Auto pile` masks. The browser uses the polygon/mask
+   directly instead of reducing it to rectangular bounds. The top bar shows the
+   total volume, and the status bar lists each ROI or auto-pile component volume.
+   Volume uses a robust per-cell surface estimate and local height clamping so
+   isolated devices or fixtures above the coal surface do not dominate the result.
+   Auto pile also removes narrow high linear cells and cells above a locally
+   fitted coal side surface, such as conveyor-belt or pipe structures crossing
+   into the upper part of the pile.
+4. Click `Undo` to restore the state before the previous completed operation.
+   Undoable operations include `Calculate`, completed manual `ROI`, `Auto pile`,
+   `Fit ground`, `Filter structure`, and `Load LAS`.
+
+For a static `.las` file, click `Load LAS` and select the file in the browser.
+The viewer parses uncompressed LAS point records in the browser and downsamples
+only the rendered points for WebGL performance. Click `Filter structure` to
+remove high warehouse structures such as the arched roof and perimeter wall
+points. Then run `Fit ground`, optionally select one or more rough four-corner
+`ROI` areas, click `Auto pile`, and click `Calculate`. `Auto pile` selects the
+largest connected elevated stockpile region above the fitted ground plane inside
+each ROI. The volume calculation then uses the combined auto-pile masks directly.
+In static mode, these operations run locally in the browser. Refresh the page to
+return to the WebSocket stream.
 
 Enable stockpile volume display:
 

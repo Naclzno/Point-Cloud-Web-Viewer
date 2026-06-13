@@ -23,6 +23,14 @@
         height: 100vh;
       }
 
+      .roi-overlay {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+      }
+
       .toolbar {
         position: fixed;
         top: 12px;
@@ -116,6 +124,10 @@
         color: #e0f2fe;
       }
 
+      input[type="file"] {
+        display: none;
+      }
+
       .metrics {
         font-variant-numeric: tabular-nums;
         font-size: 12px;
@@ -131,11 +143,18 @@
         text-align: right;
       }
 
-      .calibration {
+      .bottom-stack {
         position: fixed;
         left: 12px;
         right: 12px;
         bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .calibration,
+      .operation-status {
         padding: 8px 10px;
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 6px;
@@ -147,10 +166,15 @@
         overflow-wrap: anywhere;
         line-height: 1.45;
       }
+
+      .operation-status {
+        color: #e7edf3;
+      }
     </style>
   </head>
   <body>
     <canvas id="viewer"></canvas>
+    <svg id="roiOverlay" class="roi-overlay"></svg>
     <div class="toolbar">
       <div class="telemetry">
         <div class="status">
@@ -167,25 +191,38 @@
         </div>
       </div>
       <div class="actions">
+        <button id="loadLas" type="button">Load LAS</button>
+        <input id="lasFile" type="file" accept=".las,.LAS" />
+        <button id="filterStructure" type="button">Filter structure</button>
         <button id="fitGround" type="button">Fit ground</button>
         <button id="selectRoi" type="button">ROI</button>
+        <button id="autoPile" type="button">Auto pile</button>
         <button id="calculateVolume" type="button">Calculate</button>
         <button id="undoRoi" type="button">Undo</button>
       </div>
     </div>
-    <div id="calibration" class="calibration">Ground: z=0 · ROI: none</div>
+    <div class="bottom-stack">
+      <div id="operationStatus" class="operation-status">Ready</div>
+      <div id="calibration" class="calibration">Ground: z=0 · ROI: none</div>
+    </div>
 
     <script>
       const canvas = document.getElementById("viewer");
+      const roiOverlay = document.getElementById("roiOverlay");
       const statusDot = document.getElementById("statusDot");
       const statusText = document.getElementById("statusText");
       const pointSizeInput = document.getElementById("pointSize");
       const metrics = document.getElementById("metrics");
       const volumeDisplay = document.getElementById("volume");
       const fitGroundButton = document.getElementById("fitGround");
+      const autoPileButton = document.getElementById("autoPile");
       const selectRoiButton = document.getElementById("selectRoi");
       const calculateVolumeButton = document.getElementById("calculateVolume");
       const undoRoiButton = document.getElementById("undoRoi");
+      const loadLasButton = document.getElementById("loadLas");
+      const filterStructureButton = document.getElementById("filterStructure");
+      const lasFileInput = document.getElementById("lasFile");
+      const operationStatus = document.getElementById("operationStatus");
       const calibrationDisplay = document.getElementById("calibration");
       const gl = canvas.getContext("webgl", { antialias: false, alpha: false });
 
@@ -256,19 +293,178 @@
       let pitch = -0.45;
       let distance = 35;
       let dragging = false;
+      let dragMode = "rotate";
       let lastX = 0;
       let lastY = 0;
+      let panX = 0;
+      let panY = 0;
       let frameCount = 0;
       let lastMetricTime = performance.now();
       let fps = 0;
       let latestPoints = new Float32Array();
       let displayedPoints = new Float32Array();
       let roi = null;
+      let rois = [];
+      let pileMask = null;
       let roiSelectionActive = false;
       let roiFirstCorner = null;
+      let roiDraftPoints = [];
+      let roiStatusText = "ROI: none";
       let groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+      let groundFitted = false;
       let currentSocket = null;
       let volumeCalculationActive = false;
+      let showFilteredRegion = false;
+      let sourceMode = "live";
+      let sourceTotalPointCount = 0;
+      let staticOriginalPointCount = 0;
+      let staticRawPoints = new Float32Array();
+      let staticStructureFiltered = false;
+      let latestLivePoints = new Float32Array();
+      const undoStack = [];
+      const maxUndoSteps = 20;
+      const maxRenderedPoints = 1200000;
+      const staticVolumeGridSize = 0.1;
+      const staticVolumeMinHeight = 0.05;
+      const autoPileGridSize = 0.3;
+      const autoPileMinHeight = 0.25;
+      const autoPileMaxHeight = 12.0;
+      const autoPileMinCellPoints = 3;
+      const autoPileMinComponentCells = 10;
+      const autoPileMinComponentPeakHeight = 0.5;
+      const autoPileNeighborRadius = 1;
+      const surfaceHeightQuantile = 0.68;
+      const maxSurfaceStep = 0.8;
+      const conveyorMinHeight = 0.9;
+      const conveyorHeightJump = 0.7;
+      const conveyorMaxNeighbors = 4;
+      const conveyorMaxSupportPairs = 1;
+      const sideSurfaceFitRadius = 3;
+      const sideSurfaceFitMinNeighbors = 8;
+      const sideSurfaceFitLowerFraction = 0.7;
+      const sideSurfaceOutlierHeight = 0.45;
+
+      function setOperationStatus(message, isError = false) {
+        operationStatus.textContent = message;
+        operationStatus.style.color = isError ? "#fecaca" : "#e7edf3";
+      }
+
+      function cloneRoi(value) {
+        return value
+          ? {
+              minX: value.minX,
+              maxX: value.maxX,
+              minY: value.minY,
+              maxY: value.maxY,
+              points: value.points ? value.points.map((point) => ({ ...point })) : null,
+            }
+          : null;
+      }
+
+      function cloneRois(values) {
+        return values.map(cloneRoi).filter(Boolean);
+      }
+
+      function summarizeRois(values) {
+        if (values.length === 0) {
+          return null;
+        }
+        return {
+          minX: Math.min(...values.map((value) => value.minX)),
+          maxX: Math.max(...values.map((value) => value.maxX)),
+          minY: Math.min(...values.map((value) => value.minY)),
+          maxY: Math.max(...values.map((value) => value.maxY)),
+          count: values.length,
+        };
+      }
+
+      function clonePileMask(value) {
+        return value
+          ? {
+              cells: new Set(value.cells),
+              gridSize: value.gridSize,
+              minHeight: value.minHeight,
+              searchRoi: cloneRoi(value.searchRoi),
+              searchRois: value.searchRois ? cloneRois(value.searchRois) : [],
+              components: value.components
+                ? value.components.map((component) => ({
+                    keys: new Set(component.keys),
+                    searchRoi: cloneRoi(component.searchRoi),
+                    peakHeight: component.peakHeight,
+                  }))
+                : [],
+            }
+          : null;
+      }
+
+      function captureUndoState(label) {
+        return {
+          label,
+          roi: cloneRoi(roi),
+          rois: cloneRois(rois),
+          pileMask: clonePileMask(pileMask),
+          roiSelectionActive,
+          roiFirstCorner: roiFirstCorner ? { ...roiFirstCorner } : null,
+          roiDraftPoints: roiDraftPoints.map((point) => ({ ...point })),
+          roiStatusText,
+          groundPlane: { ...groundPlane },
+          groundFitted,
+          volumeCalculationActive,
+          showFilteredRegion,
+          volumeText: volumeDisplay.textContent,
+          sourceMode,
+          sourceTotalPointCount,
+          staticOriginalPointCount,
+          staticRawPoints,
+          staticStructureFiltered,
+          latestPoints,
+          latestLivePoints,
+          statusClassName: statusDot.className,
+          statusText: statusText.textContent,
+          metricsText: metrics.textContent,
+        };
+      }
+
+      function pushUndoState(label, state = captureUndoState(label)) {
+        undoStack.push(state);
+        if (undoStack.length > maxUndoSteps) {
+          undoStack.shift();
+        }
+      }
+
+      function restoreUndoState(state) {
+        roi = cloneRoi(state.roi);
+        rois = state.rois ? cloneRois(state.rois) : roi ? [cloneRoi(roi)] : [];
+        pileMask = clonePileMask(state.pileMask);
+        roiSelectionActive = state.roiSelectionActive;
+        roiFirstCorner = state.roiFirstCorner ? { ...state.roiFirstCorner } : null;
+        roiDraftPoints = state.roiDraftPoints ? state.roiDraftPoints.map((point) => ({ ...point })) : [];
+        roiStatusText = state.roiStatusText;
+        groundPlane = { ...state.groundPlane };
+        groundFitted = state.groundFitted;
+        volumeCalculationActive = state.volumeCalculationActive;
+        showFilteredRegion = Boolean(state.showFilteredRegion);
+        sourceMode = state.sourceMode;
+        sourceTotalPointCount = state.sourceTotalPointCount;
+        staticOriginalPointCount = state.staticOriginalPointCount;
+        staticRawPoints = state.staticRawPoints;
+        staticStructureFiltered = state.staticStructureFiltered;
+        latestPoints = state.latestPoints;
+        latestLivePoints = state.latestLivePoints;
+        volumeDisplay.textContent = state.volumeText;
+        statusDot.className = state.statusClassName;
+        statusText.textContent = state.statusText;
+        selectRoiButton.classList.toggle("active", roiSelectionActive);
+        calculateVolumeButton.classList.toggle("active", volumeCalculationActive);
+        updateCalibrationDisplay();
+        updateDisplayedPoints();
+        if (state.metricsText) {
+          metrics.textContent = state.metricsText;
+        }
+        if (sourceMode === "live") {
+          sendCalibrationToServer(volumeCalculationActive);
+        }
+      }
 
       function resizeCanvas() {
         const dpr = window.devicePixelRatio || 1;
@@ -318,8 +514,8 @@
         ]);
       }
 
-      function translate(z) {
-        return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, z, 1]);
+      function translate(x, y, z) {
+        return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
       }
 
       function rotateX(angle) {
@@ -337,7 +533,57 @@
       function viewMatrix() {
         const aspect = canvas.width / Math.max(1, canvas.height);
         const projection = perspective(Math.PI / 4, aspect, 0.05, 500);
-        return multiply(projection, multiply(translate(-distance), multiply(rotateX(pitch), rotateZ(yaw))));
+        return multiply(
+          projection,
+          multiply(translate(panX, panY, -distance), multiply(rotateX(pitch), rotateZ(yaw))),
+        );
+      }
+
+      function invertMatrix4(matrix) {
+        const out = new Float32Array(16);
+        const m = matrix;
+        const b00 = m[0] * m[5] - m[1] * m[4];
+        const b01 = m[0] * m[6] - m[2] * m[4];
+        const b02 = m[0] * m[7] - m[3] * m[4];
+        const b03 = m[1] * m[6] - m[2] * m[5];
+        const b04 = m[1] * m[7] - m[3] * m[5];
+        const b05 = m[2] * m[7] - m[3] * m[6];
+        const b06 = m[8] * m[13] - m[9] * m[12];
+        const b07 = m[8] * m[14] - m[10] * m[12];
+        const b08 = m[8] * m[15] - m[11] * m[12];
+        const b09 = m[9] * m[14] - m[10] * m[13];
+        const b10 = m[9] * m[15] - m[11] * m[13];
+        const b11 = m[10] * m[15] - m[11] * m[14];
+        const det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        if (Math.abs(det) < 1e-9) {
+          return null;
+        }
+        const invDet = 1 / det;
+        out[0] = (m[5] * b11 - m[6] * b10 + m[7] * b09) * invDet;
+        out[1] = (m[2] * b10 - m[1] * b11 - m[3] * b09) * invDet;
+        out[2] = (m[13] * b05 - m[14] * b04 + m[15] * b03) * invDet;
+        out[3] = (m[10] * b04 - m[9] * b05 - m[11] * b03) * invDet;
+        out[4] = (m[6] * b08 - m[4] * b11 - m[7] * b07) * invDet;
+        out[5] = (m[0] * b11 - m[2] * b08 + m[3] * b07) * invDet;
+        out[6] = (m[14] * b02 - m[12] * b05 - m[15] * b01) * invDet;
+        out[7] = (m[8] * b05 - m[10] * b02 + m[11] * b01) * invDet;
+        out[8] = (m[4] * b10 - m[5] * b08 + m[7] * b06) * invDet;
+        out[9] = (m[1] * b08 - m[0] * b10 - m[3] * b06) * invDet;
+        out[10] = (m[12] * b04 - m[13] * b02 + m[15] * b00) * invDet;
+        out[11] = (m[9] * b02 - m[8] * b04 - m[11] * b00) * invDet;
+        out[12] = (m[5] * b07 - m[4] * b09 - m[6] * b06) * invDet;
+        out[13] = (m[0] * b09 - m[1] * b07 + m[2] * b06) * invDet;
+        out[14] = (m[13] * b01 - m[12] * b03 - m[14] * b00) * invDet;
+        out[15] = (m[8] * b03 - m[9] * b01 + m[10] * b00) * invDet;
+        return out;
+      }
+
+      function transformPoint4(matrix, x, y, z, w) {
+        const tx = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12] * w;
+        const ty = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13] * w;
+        const tz = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14] * w;
+        const tw = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15] * w;
+        return { x: tx / tw, y: ty / tw, z: tz / tw };
       }
 
       function updateCalibrationDisplay() {
@@ -345,17 +591,29 @@
         const groundText =
           `ground_plane_a:=${a.toFixed(6)} ground_plane_b:=${b.toFixed(6)} ` +
           `ground_plane_c:=${c.toFixed(6)} ground_plane_d:=${d.toFixed(6)}`;
-        const roiText = roi
-          ? `ROI x=[${roi.minX.toFixed(2)}, ${roi.maxX.toFixed(2)}] y=[${roi.minY.toFixed(2)}, ${roi.maxY.toFixed(2)}]`
+        const roiSummary = summarizeRois(rois);
+        const roiText = roiSummary
+          ? `ROI ${roiSummary.count} area${roiSummary.count > 1 ? "s" : ""} x=[${roiSummary.minX.toFixed(2)}, ${roiSummary.maxX.toFixed(2)}] y=[${roiSummary.minY.toFixed(2)}, ${roiSummary.maxY.toFixed(2)}]`
           : "ROI: none";
-        calibrationDisplay.textContent = `${groundText} · ${roiText}`;
+        calibrationDisplay.textContent = `${groundText} · ${roiText} · ${roiStatusText}`;
+      }
+
+      function formatPoint(point) {
+        return `x=${point.x.toFixed(3)}, y=${point.y.toFixed(3)}`;
+      }
+
+      function groundZAt(x, y) {
+        return Math.abs(groundPlane.c) > 1e-6 ? -(groundPlane.a * x + groundPlane.b * y + groundPlane.d) / groundPlane.c : 0;
       }
 
       function sendCalibrationToServer(enableVolume = volumeCalculationActive) {
+        if (sourceMode !== "live") {
+          return;
+        }
         if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
           return;
         }
-        const sendRoi = Boolean(enableVolume && roi);
+        const sendRoi = Boolean(enableVolume && roi && rois.length <= 1 && !pileMask && !roi.points);
         currentSocket.send(
           JSON.stringify({
             type: "calibration",
@@ -372,8 +630,56 @@
         );
       }
 
+      function pointInRoiShape(region, x, y) {
+        if (!region) {
+          return true;
+        }
+        if (x < region.minX || x > region.maxX || y < region.minY || y > region.maxY) {
+          return false;
+        }
+        if (!region.points || region.points.length < 3) {
+          return true;
+        }
+
+        let inside = false;
+        for (let i = 0, j = region.points.length - 1; i < region.points.length; j = i++) {
+          const pi = region.points[i];
+          const pj = region.points[j];
+          const dy = pj.y - pi.y;
+          const intersects =
+            pi.y > y !== pj.y > y &&
+            x < ((pj.x - pi.x) * (y - pi.y)) / (Math.abs(dy) < 1e-9 ? 1e-9 : dy) + pi.x;
+          if (intersects) {
+            inside = !inside;
+          }
+        }
+        return inside;
+      }
+
       function pointInRoi(x, y) {
-        return !roi || (x >= roi.minX && x <= roi.maxX && y >= roi.minY && y <= roi.maxY);
+        if (rois.length === 0) {
+          return true;
+        }
+        return rois.some((region) => pointInRoiShape(region, x, y));
+      }
+
+      function pileCellKey(x, y) {
+        return `${Math.floor(x / autoPileGridSize)},${Math.floor(y / autoPileGridSize)}`;
+      }
+
+      function pointInActiveRegion(x, y) {
+        if (pileMask) {
+          const searchRois = pileMask.searchRois && pileMask.searchRois.length > 0
+            ? pileMask.searchRois
+            : pileMask.searchRoi
+              ? [pileMask.searchRoi]
+              : [];
+          return (
+            pileMask.cells.has(pileCellKey(x, y)) &&
+            (searchRois.length === 0 || searchRois.some((region) => pointInRoiShape(region, x, y)))
+          );
+        }
+        return pointInRoi(x, y);
       }
 
       function updatePointBuffer(points) {
@@ -382,34 +688,66 @@
         gl.bufferData(gl.ARRAY_BUFFER, points, gl.DYNAMIC_DRAW);
       }
 
-      function updateDisplayedPoints() {
-        if (!roi) {
-          displayedPoints = latestPoints;
-          updatePointBuffer(displayedPoints);
-          computeBrowserVolume(false);
-          return;
+      function makeDisplayPoints(points) {
+        const total = Math.floor(points.length / 3);
+        if (total === 0) {
+          return new Float32Array();
+        }
+
+        const shouldFilterDisplay = showFilteredRegion && (rois.length > 0 || pileMask);
+
+        if (!shouldFilterDisplay && total <= maxRenderedPoints) {
+          return points;
+        }
+
+        if (!shouldFilterDisplay) {
+          const stride = Math.ceil(total / maxRenderedPoints);
+          const rendered = Math.ceil(total / stride);
+          const output = new Float32Array(rendered * 3);
+          let out = 0;
+          for (let index = 0; index < total; index += stride) {
+            const offset = index * 3;
+            output[out++] = points[offset];
+            output[out++] = points[offset + 1];
+            output[out++] = points[offset + 2];
+          }
+          return out === output.length ? output : output.slice(0, out);
         }
 
         let kept = 0;
-        for (let i = 0; i < latestPoints.length; i += 3) {
-          if (pointInRoi(latestPoints[i], latestPoints[i + 1])) {
+        for (let i = 0; i < points.length; i += 3) {
+          if (pointInActiveRegion(points[i], points[i + 1])) {
             kept++;
           }
         }
+        if (kept === 0) {
+          return new Float32Array();
+        }
 
-        const filtered = new Float32Array(kept * 3);
+        const stride = Math.max(1, Math.ceil(kept / maxRenderedPoints));
+        const rendered = Math.ceil(kept / stride);
+        const output = new Float32Array(rendered * 3);
         let out = 0;
-        for (let i = 0; i < latestPoints.length; i += 3) {
-          const x = latestPoints[i];
-          const y = latestPoints[i + 1];
-          if (!pointInRoi(x, y)) {
+        let matched = 0;
+        for (let i = 0; i < points.length; i += 3) {
+          const x = points[i];
+          const y = points[i + 1];
+          if (!pointInActiveRegion(x, y)) {
             continue;
           }
-          filtered[out++] = x;
-          filtered[out++] = y;
-          filtered[out++] = latestPoints[i + 2];
+          if (matched % stride === 0) {
+            output[out++] = x;
+            output[out++] = y;
+            output[out++] = points[i + 2];
+          }
+          matched++;
         }
-        displayedPoints = filtered;
+        return out === output.length ? output : output.slice(0, out);
+      }
+
+      function updateDisplayedPoints() {
+        sourceTotalPointCount = Math.floor(latestPoints.length / 3);
+        displayedPoints = makeDisplayPoints(latestPoints);
         updatePointBuffer(displayedPoints);
         computeBrowserVolume(false);
       }
@@ -457,9 +795,10 @@
       }
 
       function fitGroundPlane() {
-        const source = roi ? displayedPoints : latestPoints;
+        const source = rois.length > 0 || roi ? displayedPoints : latestPoints;
         const totalPoints = Math.floor(source.length / 3);
         if (totalPoints < 30) {
+          setOperationStatus("Fit ground failed: not enough points", true);
           return;
         }
 
@@ -502,6 +841,7 @@
         }
 
         if (bestPlane) {
+          pushUndoState("Fit ground");
           const offsets = [];
           for (const point of samples) {
             const distanceToPlane = Math.abs(
@@ -516,14 +856,881 @@
             bestPlane.d = offsets[Math.floor(offsets.length / 2)];
           }
           groundPlane = bestPlane;
+          groundFitted = true;
           updateCalibrationDisplay();
           sendCalibrationToServer();
           computeBrowserVolume(true);
+          setOperationStatus(
+            `Fit ground succeeded: a=${groundPlane.a.toFixed(4)}, b=${groundPlane.b.toFixed(4)}, c=${groundPlane.c.toFixed(4)}, d=${groundPlane.d.toFixed(4)}`,
+          );
+        } else {
+          groundFitted = false;
+          setOperationStatus("Fit ground failed: no stable ground plane found", true);
         }
+      }
+
+      function pointHeightAboveGround(x, y, z) {
+        return groundPlane.a * x + groundPlane.b * y + groundPlane.c * z + groundPlane.d;
+      }
+
+      function robustHeightFromValues(values, fraction = surfaceHeightQuantile) {
+        if (values.length === 0) {
+          return 0;
+        }
+        const sorted = [...values].sort((a, b) => a - b);
+        const index = Math.max(0, Math.min(sorted.length - 1, Math.floor(fraction * (sorted.length - 1))));
+        return sorted[index];
+      }
+
+      function parseGridKey(key) {
+        const [gx, gy] = key.split(",").map(Number);
+        return { gx, gy };
+      }
+
+      function pruneConveyorLikeCells(cells, heightOfCell) {
+        const removeKeys = new Set();
+        const supportPairs = [
+          [[1, 0], [-1, 0]],
+          [[0, 1], [0, -1]],
+          [[1, 1], [-1, -1]],
+          [[1, -1], [-1, 1]],
+        ];
+
+        for (const [key, cell] of cells) {
+          const height = heightOfCell(cell);
+          if (height < conveyorMinHeight) {
+            continue;
+          }
+
+          const { gx, gy } = parseGridKey(key);
+          const neighborHeights = [];
+          let neighborCount = 0;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighbor = cells.get(`${gx + dx},${gy + dy}`);
+              if (neighbor === undefined) {
+                continue;
+              }
+              neighborCount++;
+              neighborHeights.push(heightOfCell(neighbor));
+            }
+          }
+          if (neighborHeights.length < 2) {
+            removeKeys.add(key);
+            continue;
+          }
+
+          let pairSupportCount = 0;
+          for (const pair of supportPairs) {
+            if (pair.every(([dx, dy]) => cells.has(`${gx + dx},${gy + dy}`))) {
+              pairSupportCount++;
+            }
+          }
+
+          const localMedian = robustHeightFromValues(neighborHeights, 0.5);
+          const isNarrow = neighborCount <= conveyorMaxNeighbors || pairSupportCount <= conveyorMaxSupportPairs;
+          const isHighAboveSurface = height >= localMedian + conveyorHeightJump;
+          if (isNarrow && isHighAboveSurface) {
+            removeKeys.add(key);
+          }
+        }
+
+        for (const key of removeKeys) {
+          cells.delete(key);
+        }
+        return removeKeys.size;
+      }
+
+      function solve3x3(matrix, vector) {
+        const a = matrix.map((row, index) => [...row, vector[index]]);
+        for (let pivot = 0; pivot < 3; pivot++) {
+          let bestRow = pivot;
+          for (let row = pivot + 1; row < 3; row++) {
+            if (Math.abs(a[row][pivot]) > Math.abs(a[bestRow][pivot])) {
+              bestRow = row;
+            }
+          }
+          if (Math.abs(a[bestRow][pivot]) < 1e-9) {
+            return null;
+          }
+          [a[pivot], a[bestRow]] = [a[bestRow], a[pivot]];
+          const divisor = a[pivot][pivot];
+          for (let col = pivot; col < 4; col++) {
+            a[pivot][col] /= divisor;
+          }
+          for (let row = 0; row < 3; row++) {
+            if (row === pivot) {
+              continue;
+            }
+            const factor = a[row][pivot];
+            for (let col = pivot; col < 4; col++) {
+              a[row][col] -= factor * a[pivot][col];
+            }
+          }
+        }
+        return [a[0][3], a[1][3], a[2][3]];
+      }
+
+      function fitHeightPlane(samples) {
+        if (samples.length < sideSurfaceFitMinNeighbors) {
+          return null;
+        }
+        let sx = 0;
+        let sy = 0;
+        let sh = 0;
+        let sxx = 0;
+        let syy = 0;
+        let sxy = 0;
+        let sxh = 0;
+        let syh = 0;
+        for (const sample of samples) {
+          sx += sample.x;
+          sy += sample.y;
+          sh += sample.h;
+          sxx += sample.x * sample.x;
+          syy += sample.y * sample.y;
+          sxy += sample.x * sample.y;
+          sxh += sample.x * sample.h;
+          syh += sample.y * sample.h;
+        }
+        const solution = solve3x3(
+          [
+            [sxx, sxy, sx],
+            [sxy, syy, sy],
+            [sx, sy, samples.length],
+          ],
+          [sxh, syh, sh],
+        );
+        if (!solution) {
+          return null;
+        }
+        const [a, b, c] = solution;
+        return (x, y) => a * x + b * y + c;
+      }
+
+      function fittedSideSurfaceHeight(cells, gx, gy, heightOfCell) {
+        const samples = [];
+        for (let dx = -sideSurfaceFitRadius; dx <= sideSurfaceFitRadius; dx++) {
+          for (let dy = -sideSurfaceFitRadius; dy <= sideSurfaceFitRadius; dy++) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+            if (Math.hypot(dx, dy) > sideSurfaceFitRadius) {
+              continue;
+            }
+            const neighbor = cells.get(`${gx + dx},${gy + dy}`);
+            if (neighbor === undefined) {
+              continue;
+            }
+            samples.push({ x: gx + dx, y: gy + dy, h: heightOfCell(neighbor) });
+          }
+        }
+        if (samples.length < sideSurfaceFitMinNeighbors) {
+          return null;
+        }
+        samples.sort((a, b) => a.h - b.h);
+        const sampleCount = Math.max(
+          sideSurfaceFitMinNeighbors,
+          Math.floor(samples.length * sideSurfaceFitLowerFraction),
+        );
+        const plane = fitHeightPlane(samples.slice(0, sampleCount));
+        return plane ? plane(gx, gy) : null;
+      }
+
+      function pruneCellsAboveFittedSideSurface(cells, heightOfCell) {
+        const removeKeys = new Set();
+        for (const [key, cell] of cells) {
+          const height = heightOfCell(cell);
+          if (height < conveyorMinHeight) {
+            continue;
+          }
+          const { gx, gy } = parseGridKey(key);
+          const fittedHeight = fittedSideSurfaceHeight(cells, gx, gy, heightOfCell);
+          if (fittedHeight === null) {
+            continue;
+          }
+          if (height > fittedHeight + sideSurfaceOutlierHeight) {
+            removeKeys.add(key);
+          }
+        }
+        for (const key of removeKeys) {
+          cells.delete(key);
+        }
+        return removeKeys.size;
+      }
+
+      function clampCellsToFittedSideSurface(cells) {
+        const clamped = new Map();
+        for (const [key, height] of cells) {
+          const { gx, gy } = parseGridKey(key);
+          const fittedHeight = fittedSideSurfaceHeight(cells, gx, gy, (value) => value);
+          if (fittedHeight !== null && height > fittedHeight + sideSurfaceOutlierHeight) {
+            clamped.set(key, Math.max(staticVolumeMinHeight, fittedHeight));
+          } else {
+            clamped.set(key, height);
+          }
+        }
+        return clamped;
+      }
+
+      function autoDetectPile() {
+        if (latestPoints.length === 0) {
+          setOperationStatus("Auto pile failed: no point cloud loaded", true);
+          return;
+        }
+        if (!groundFitted) {
+          setOperationStatus("Auto pile failed: run Fit ground first", true);
+          return;
+        }
+
+        const minCellPoints = autoPileMinCellPoints;
+        const minCellHeight = autoPileMinHeight;
+        const neighborDeltas = [];
+        for (let dx = -autoPileNeighborRadius; dx <= autoPileNeighborRadius; dx++) {
+          for (let dy = -autoPileNeighborRadius; dy <= autoPileNeighborRadius; dy++) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+            if (Math.hypot(dx, dy) <= autoPileNeighborRadius) {
+              neighborDeltas.push([dx, dy]);
+            }
+          }
+        }
+
+        function detectPilesInRegion(searchRegion) {
+          const candidateCells = new Map();
+          for (let i = 0; i < latestPoints.length; i += 3) {
+            const x = latestPoints[i];
+            const y = latestPoints[i + 1];
+            if (searchRegion && !pointInRoiShape(searchRegion, x, y)) {
+              continue;
+            }
+            const z = latestPoints[i + 2];
+            const height = pointHeightAboveGround(x, y, z);
+            if (height <= autoPileMinHeight || height > autoPileMaxHeight) {
+              continue;
+            }
+
+            const key = pileCellKey(x, y);
+            const cell = candidateCells.get(key);
+            if (cell) {
+              cell.count++;
+              cell.heights.push(height);
+            } else {
+              candidateCells.set(key, {
+                count: 1,
+                heights: [height],
+                gx: Math.floor(x / autoPileGridSize),
+                gy: Math.floor(y / autoPileGridSize),
+              });
+            }
+          }
+
+          const validCells = new Map();
+          for (const [key, cell] of candidateCells) {
+            cell.surfaceHeight = robustHeightFromValues(cell.heights);
+            cell.maxHeight = Math.max(...cell.heights);
+            if (cell.count >= minCellPoints && cell.surfaceHeight >= minCellHeight) {
+              validCells.set(key, cell);
+            }
+          }
+          if (validCells.size === 0) {
+            return null;
+          }
+          pruneConveyorLikeCells(validCells, (cell) => cell.surfaceHeight);
+          if (validCells.size === 0) {
+            return null;
+          }
+          pruneCellsAboveFittedSideSurface(validCells, (cell) => cell.surfaceHeight);
+          if (validCells.size === 0) {
+            return null;
+          }
+
+          const visited = new Set();
+          const components = [];
+          for (const [startKey, startCell] of validCells) {
+            if (visited.has(startKey)) {
+              continue;
+            }
+            const queue = [startCell];
+            const keys = new Set([startKey]);
+            visited.add(startKey);
+            let totalHeight = 0;
+            let peakHeight = 0;
+            let minGx = startCell.gx;
+            let maxGx = startCell.gx;
+            let minGy = startCell.gy;
+            let maxGy = startCell.gy;
+
+            for (let cursor = 0; cursor < queue.length; cursor++) {
+              const cell = queue[cursor];
+              totalHeight += cell.surfaceHeight;
+              peakHeight = Math.max(peakHeight, cell.surfaceHeight);
+              minGx = Math.min(minGx, cell.gx);
+              maxGx = Math.max(maxGx, cell.gx);
+              minGy = Math.min(minGy, cell.gy);
+              maxGy = Math.max(maxGy, cell.gy);
+
+              for (const [dx, dy] of neighborDeltas) {
+                const nextKey = `${cell.gx + dx},${cell.gy + dy}`;
+                if (visited.has(nextKey)) {
+                  continue;
+                }
+                const nextCell = validCells.get(nextKey);
+                if (!nextCell) {
+                  continue;
+                }
+                visited.add(nextKey);
+                keys.add(nextKey);
+                queue.push(nextCell);
+              }
+            }
+
+            const component = { keys, totalHeight, peakHeight, minGx, maxGx, minGy, maxGy };
+            if (
+              component.keys.size >= autoPileMinComponentCells &&
+              component.peakHeight >= autoPileMinComponentPeakHeight
+            ) {
+              components.push(component);
+            }
+          }
+          components.sort((a, b) => b.totalHeight - a.totalHeight || b.keys.size - a.keys.size);
+          return components;
+        }
+
+        const searchRegions = rois.length > 0 ? cloneRois(rois) : [null];
+        const selectedComponents = [];
+        const selectedCells = new Set();
+        let peakHeight = 0;
+        let minGx = Number.POSITIVE_INFINITY;
+        let maxGx = Number.NEGATIVE_INFINITY;
+        let minGy = Number.POSITIVE_INFINITY;
+        let maxGy = Number.NEGATIVE_INFINITY;
+
+        for (const searchRegion of searchRegions) {
+          const components = detectPilesInRegion(searchRegion);
+          if (components.length === 0) {
+            continue;
+          }
+          for (const component of components) {
+            const componentWithRegion = { ...component, searchRoi: cloneRoi(searchRegion) };
+            selectedComponents.push(componentWithRegion);
+            for (const key of component.keys) {
+              selectedCells.add(key);
+            }
+            peakHeight = Math.max(peakHeight, component.peakHeight);
+            minGx = Math.min(minGx, component.minGx);
+            maxGx = Math.max(maxGx, component.maxGx);
+            minGy = Math.min(minGy, component.minGy);
+            maxGy = Math.max(maxGy, component.maxGy);
+          }
+        }
+
+        if (selectedComponents.length === 0) {
+          setOperationStatus(
+            rois.length > 0
+              ? "Auto pile failed: no large connected coal region found inside selected ROIs"
+              : "Auto pile failed: no large connected coal region found",
+            true,
+          );
+          return;
+        }
+
+        pushUndoState("Auto pile");
+        pileMask = {
+          cells: selectedCells,
+          gridSize: autoPileGridSize,
+          minHeight: autoPileMinHeight,
+          searchRois: rois.length > 0 ? cloneRois(rois) : [],
+          components: selectedComponents.map((component) => ({
+            keys: new Set(component.keys),
+            searchRoi: cloneRoi(component.searchRoi),
+            peakHeight: component.peakHeight,
+          })),
+        };
+        roi = {
+          minX: minGx * autoPileGridSize,
+          maxX: (maxGx + 1) * autoPileGridSize,
+          minY: minGy * autoPileGridSize,
+          maxY: (maxGy + 1) * autoPileGridSize,
+        };
+        roiFirstCorner = null;
+        roiDraftPoints = [];
+        roiSelectionActive = false;
+        volumeCalculationActive = false;
+        showFilteredRegion = true;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        volumeDisplay.textContent = "Volume: -- m³";
+        const searchText = rois.length > 0 ? ` within ${rois.length} ROI${rois.length > 1 ? "s" : ""}` : "";
+        roiStatusText =
+          `Auto pile${searchText}: ${selectedCells.size.toLocaleString()} cells; ` +
+          `${selectedComponents.length} pile${selectedComponents.length > 1 ? "s" : ""}; peak_height=${peakHeight.toFixed(2)}m`;
+        updateCalibrationDisplay();
+        updateDisplayedPoints();
+        sendCalibrationToServer(false);
+        setOperationStatus(
+          `Auto pile succeeded${searchText}: ${selectedCells.size.toLocaleString()} cells selected`,
+        );
       }
 
       function computeBrowserVolume(force) {
         void force;
+        if (!volumeCalculationActive || (rois.length === 0 && !roi && !pileMask) || latestPoints.length === 0) {
+          return;
+        }
+        if (sourceMode !== "static" && !pileMask && rois.length === 0 && !(roi && roi.points)) {
+          return;
+        }
+
+        function computeVolumeForRegion(name, containsPoint, limitPileHeight) {
+          const cellHeights = new Map();
+          for (let i = 0; i < latestPoints.length; i += 3) {
+            const x = latestPoints[i];
+            const y = latestPoints[i + 1];
+            if (!containsPoint(x, y)) {
+              continue;
+            }
+
+            const z = latestPoints[i + 2];
+            const height = groundPlane.a * x + groundPlane.b * y + groundPlane.c * z + groundPlane.d;
+            if (height <= staticVolumeMinHeight) {
+              continue;
+            }
+            if (limitPileHeight && height > autoPileMaxHeight) {
+              continue;
+            }
+
+            const key = `${Math.floor(x / staticVolumeGridSize)},${Math.floor(y / staticVolumeGridSize)}`;
+            const heights = cellHeights.get(key);
+            if (heights) {
+              heights.push(height);
+            } else {
+              cellHeights.set(key, [height]);
+            }
+          }
+
+          let cells = new Map();
+          for (const [key, heights] of cellHeights) {
+            cells.set(key, robustHeightFromValues(heights));
+          }
+          if (limitPileHeight) {
+            pruneConveyorLikeCells(cells, (height) => height);
+            cells = clampCellsToFittedSideSurface(cells);
+          }
+
+          const clampedCells = new Map();
+          for (const [key, height] of cells) {
+            const [gx, gy] = key.split(",").map(Number);
+            const neighborHeights = [];
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) {
+                  continue;
+                }
+                const neighbor = cells.get(`${gx + dx},${gy + dy}`);
+                if (neighbor !== undefined) {
+                  neighborHeights.push(neighbor);
+                }
+              }
+            }
+            if (neighborHeights.length >= 3) {
+              const localHeight = robustHeightFromValues(neighborHeights, 0.5);
+              clampedCells.set(key, Math.min(height, localHeight + maxSurfaceStep));
+            } else {
+              clampedCells.set(key, height);
+            }
+          }
+
+          let volume = 0;
+          for (const height of clampedCells.values()) {
+            volume += height * staticVolumeGridSize * staticVolumeGridSize;
+          }
+          return { name, volume, cells: clampedCells.size };
+        }
+
+        let volumeParts = [];
+        if (pileMask && pileMask.components && pileMask.components.length > 0) {
+          volumeParts = pileMask.components.map((component, index) =>
+            computeVolumeForRegion(
+              `Auto pile ${index + 1}`,
+              (x, y) =>
+                component.keys.has(pileCellKey(x, y)) &&
+                (!component.searchRoi || pointInRoiShape(component.searchRoi, x, y)),
+              true,
+            ),
+          );
+        } else if (pileMask) {
+          volumeParts = [
+            computeVolumeForRegion(
+              "Auto pile",
+              (x, y) => pointInActiveRegion(x, y),
+              true,
+            ),
+          ];
+        } else {
+          const regions = rois.length > 0 ? rois : roi ? [roi] : [];
+          volumeParts = regions.map((region, index) =>
+            computeVolumeForRegion(`ROI ${index + 1}`, (x, y) => pointInRoiShape(region, x, y), false),
+          );
+        }
+
+        const volume = volumeParts.reduce((sum, part) => sum + part.volume, 0);
+        const totalCells = volumeParts.reduce((sum, part) => sum + part.cells, 0);
+        const sourceText = pileMask
+          ? "auto pile browser"
+          : rois.length > 0 || (roi && roi.points)
+            ? "ROI polygon browser"
+            : "static";
+        volumeDisplay.textContent = `Volume: ${volume.toFixed(2)} m³ · ${totalCells.toLocaleString()} cells · ${sourceText}`;
+        const details = volumeParts
+          .map((part) => `${part.name}: ${part.volume.toFixed(2)} m³ (${part.cells.toLocaleString()} cells)`)
+          .join(" · ");
+        setOperationStatus(`Browser volume calculation succeeded: total ${volume.toFixed(2)} m³ · ${details}`);
+      }
+
+      function quantile(sortedValues, fraction) {
+        if (sortedValues.length === 0) {
+          return 0;
+        }
+        const index = Math.max(
+          0,
+          Math.min(sortedValues.length - 1, Math.floor(fraction * (sortedValues.length - 1))),
+        );
+        return sortedValues[index];
+      }
+
+      function estimateRoofCutZ(points) {
+        const total = Math.floor(points.length / 3);
+        if (total < 1000) {
+          return Number.POSITIVE_INFINITY;
+        }
+
+        const sampleTarget = 600000;
+        const stride = Math.max(1, Math.floor(total / sampleTarget));
+        const samples = [];
+        for (let index = 0; index < total; index += stride) {
+          samples.push(points[index * 3 + 2]);
+        }
+        samples.sort((a, b) => a - b);
+
+        const z01 = quantile(samples, 0.01);
+        const z50 = quantile(samples, 0.5);
+        const z95 = quantile(samples, 0.95);
+        if (z95 - z01 < 6) {
+          return z95 + 1;
+        }
+
+        const binSize = 0.5;
+        const minZ = z01;
+        const maxZ = z95;
+        const binCount = Math.max(4, Math.ceil((maxZ - minZ) / binSize) + 1);
+        const bins = new Array(binCount).fill(0);
+        for (const z of samples) {
+          if (z < minZ || z > maxZ) {
+            continue;
+          }
+          const bin = Math.max(0, Math.min(binCount - 1, Math.floor((z - minZ) / binSize)));
+          bins[bin]++;
+        }
+
+        const smoothed = bins.map((count, index) => {
+          const prev = bins[Math.max(0, index - 1)];
+          const next = bins[Math.min(binCount - 1, index + 1)];
+          return prev + count * 2 + next;
+        });
+        const medianBin = Math.max(0, Math.min(binCount - 1, Math.floor((z50 - minZ) / binSize)));
+        const highStartBin = Math.max(medianBin + 1, Math.floor(binCount * 0.55));
+        let roofPeakBin = highStartBin;
+        for (let bin = highStartBin; bin < binCount; bin++) {
+          if (smoothed[bin] > smoothed[roofPeakBin]) {
+            roofPeakBin = bin;
+          }
+        }
+
+        let valleyBin = medianBin;
+        for (let bin = medianBin; bin <= roofPeakBin; bin++) {
+          if (smoothed[bin] < smoothed[valleyBin]) {
+            valleyBin = bin;
+          }
+        }
+
+        const valleyCut = minZ + (valleyBin + 0.5) * binSize;
+        const fallbackCut = z01 + 14;
+        const minCut = quantile(samples, 0.55);
+        const maxCut = z95 - 1;
+        return Math.max(minCut, Math.min(maxCut, Number.isFinite(valleyCut) ? valleyCut : fallbackCut));
+      }
+
+      function filterStaticWarehouseStructure(points) {
+        const total = Math.floor(points.length / 3);
+        const roofCutZ = estimateRoofCutZ(points);
+        const sampleTarget = 600000;
+        const stride = Math.max(1, Math.floor(total / sampleTarget));
+        const xs = [];
+        const ys = [];
+        const zs = [];
+        for (let index = 0; index < total; index += stride) {
+          const offset = index * 3;
+          xs.push(points[offset]);
+          ys.push(points[offset + 1]);
+          zs.push(points[offset + 2]);
+        }
+        xs.sort((a, b) => a - b);
+        ys.sort((a, b) => a - b);
+        zs.sort((a, b) => a - b);
+        const xMin = quantile(xs, 0.01);
+        const xMax = quantile(xs, 0.99);
+        const yMin = quantile(ys, 0.01);
+        const yMax = quantile(ys, 0.99);
+        const lowZ = quantile(zs, 0.05);
+        const wallMargin = 1.0;
+        const wallMinZ = lowZ + 0.4;
+        let kept = 0;
+        for (let i = 0; i < points.length; i += 3) {
+          const x = points[i];
+          const y = points[i + 1];
+          const z = points[i + 2];
+          const nearOuterWall =
+            x <= xMin + wallMargin ||
+            x >= xMax - wallMargin ||
+            y <= yMin + wallMargin ||
+            y >= yMax - wallMargin;
+          if (z <= roofCutZ && !(nearOuterWall && z > wallMinZ)) {
+            kept++;
+          }
+        }
+
+        const filtered = new Float32Array(kept * 3);
+        let out = 0;
+        for (let i = 0; i < points.length; i += 3) {
+          const x = points[i];
+          const y = points[i + 1];
+          const z = points[i + 2];
+          const nearOuterWall =
+            x <= xMin + wallMargin ||
+            x >= xMax - wallMargin ||
+            y <= yMin + wallMargin ||
+            y >= yMax - wallMargin;
+          if (z > roofCutZ || (nearOuterWall && z > wallMinZ)) {
+            continue;
+          }
+          filtered[out++] = x;
+          filtered[out++] = y;
+          filtered[out++] = z;
+        }
+
+        return {
+          points: filtered,
+          originalCount: total,
+          filteredCount: kept,
+          removedCount: total - kept,
+          roofCutZ,
+          wallBounds: { xMin, xMax, yMin, yMax, wallMargin, wallMinZ },
+        };
+      }
+
+      function parseLasHeader(arrayBuffer, fileSize) {
+        const view = new DataView(arrayBuffer);
+        if (arrayBuffer.byteLength < 227) {
+          throw new Error("LAS header is too small");
+        }
+        const signature = String.fromCharCode(
+          view.getUint8(0),
+          view.getUint8(1),
+          view.getUint8(2),
+          view.getUint8(3),
+        );
+        if (signature !== "LASF") {
+          throw new Error("Invalid LAS signature");
+        }
+
+        const pointDataOffset = view.getUint32(96, true);
+        const pointFormat = view.getUint8(104) & 0x3f;
+        const recordLength = view.getUint16(105, true);
+        let pointCount = view.getUint32(107, true);
+        if (pointCount === 0 && arrayBuffer.byteLength >= 255 && typeof view.getBigUint64 === "function") {
+          pointCount = Number(view.getBigUint64(247, true));
+        }
+        if (recordLength < 12 || pointDataOffset >= fileSize) {
+          throw new Error("Unsupported LAS point layout");
+        }
+        if (pointFormat > 10) {
+          throw new Error(`Unsupported LAS point format ${pointFormat}`);
+        }
+
+        const scaleX = view.getFloat64(131, true);
+        const scaleY = view.getFloat64(139, true);
+        const scaleZ = view.getFloat64(147, true);
+        const offsetX = view.getFloat64(155, true);
+        const offsetY = view.getFloat64(163, true);
+        const offsetZ = view.getFloat64(171, true);
+        const availableRecords = Math.floor((fileSize - pointDataOffset) / recordLength);
+        const safePointCount = Math.min(pointCount, availableRecords);
+
+        return {
+          pointDataOffset,
+          pointFormat,
+          recordLength,
+          pointCount: safePointCount,
+          scaleX,
+          scaleY,
+          scaleZ,
+          offsetX,
+          offsetY,
+          offsetZ,
+        };
+      }
+
+      async function parseLasFile(file) {
+        const header = parseLasHeader(await file.slice(0, 375).arrayBuffer(), file.size);
+        const {
+          pointDataOffset,
+          pointFormat,
+          recordLength,
+          pointCount,
+          scaleX,
+          scaleY,
+          scaleZ,
+          offsetX,
+          offsetY,
+          offsetZ,
+        } = header;
+
+        const points = new Float32Array(pointCount * 3);
+        const recordsPerChunk = 250000;
+        let out = 0;
+
+        for (let start = 0; start < pointCount; start += recordsPerChunk) {
+          const records = Math.min(recordsPerChunk, pointCount - start);
+          const byteStart = pointDataOffset + start * recordLength;
+          const byteEnd = byteStart + records * recordLength;
+          const chunkView = new DataView(await file.slice(byteStart, byteEnd).arrayBuffer());
+
+          for (let index = 0; index < records; index++) {
+            const pointOffset = index * recordLength;
+            points[out++] = chunkView.getInt32(pointOffset, true) * scaleX + offsetX;
+            points[out++] = chunkView.getInt32(pointOffset + 4, true) * scaleY + offsetY;
+            points[out++] = chunkView.getInt32(pointOffset + 8, true) * scaleZ + offsetZ;
+          }
+
+          const percent = Math.min(100, Math.round(((start + records) * 100) / pointCount));
+          statusText.textContent = `Loading LAS ${percent}%`;
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+
+        return {
+          points,
+          pointFormat,
+          recordLength,
+          pointCount,
+        };
+      }
+
+      async function loadLasFile(file) {
+        if (!file) {
+          return;
+        }
+
+        const undoState = captureUndoState("Load LAS");
+        statusDot.className = "dot";
+        statusText.textContent = "Loading LAS";
+        setOperationStatus(`Loading LAS: ${file.name}`);
+        volumeDisplay.textContent = "Volume: -- m³";
+        roi = null;
+        rois = [];
+        pileMask = null;
+        roiFirstCorner = null;
+        roiDraftPoints = [];
+        roiSelectionActive = false;
+        roiStatusText = "ROI: none";
+        groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+        groundFitted = false;
+        volumeCalculationActive = false;
+        showFilteredRegion = false;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        updateCalibrationDisplay();
+
+        try {
+          const result = await parseLasFile(file);
+          pushUndoState("Load LAS", undoState);
+          sourceMode = "static";
+          staticRawPoints = result.points;
+          staticStructureFiltered = false;
+          latestPoints = result.points;
+          staticOriginalPointCount = result.pointCount;
+          sourceTotalPointCount = result.pointCount;
+          updateDisplayedPoints();
+          statusDot.className = "dot connected";
+          statusText.textContent = "Connected";
+          volumeDisplay.textContent = "Volume: -- m³";
+          metrics.textContent =
+            `${pointCount.toLocaleString()} shown / ${sourceTotalPointCount.toLocaleString()} points`;
+          roiStatusText =
+            `Static LAS loaded: ${file.name}; raw_points=${result.pointCount.toLocaleString()};` +
+            ` point_format=${result.pointFormat}; record_len=${result.recordLength}`;
+          setOperationStatus(`LAS loaded successfully: ${result.pointCount.toLocaleString()} points`);
+          updateCalibrationDisplay();
+        } catch (error) {
+          statusDot.className = "dot error";
+          statusText.textContent = "LAS error";
+          roiStatusText = `Static LAS error: ${error.message}`;
+          setOperationStatus(`LAS load failed: ${error.message}`, true);
+          updateCalibrationDisplay();
+        }
+      }
+
+      async function filterStaticStructure() {
+        if (sourceMode !== "static" || staticRawPoints.length === 0) {
+          setOperationStatus("Filter structure failed: load a LAS file first", true);
+          return;
+        }
+
+        const undoState = captureUndoState("Filter structure");
+        roi = null;
+        rois = [];
+        pileMask = null;
+        roiFirstCorner = null;
+        roiDraftPoints = [];
+        roiSelectionActive = false;
+        volumeCalculationActive = false;
+        showFilteredRegion = false;
+        groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+        groundFitted = false;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        volumeDisplay.textContent = "Volume: -- m³";
+        statusText.textContent = "Filtering";
+        setOperationStatus("Filtering warehouse roof and wall structures...");
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+
+        try {
+          const filtered = filterStaticWarehouseStructure(staticRawPoints);
+          pushUndoState("Filter structure", undoState);
+          latestPoints = filtered.points;
+          staticStructureFiltered = true;
+          staticOriginalPointCount = filtered.originalCount;
+          sourceTotalPointCount = filtered.filteredCount;
+          updateDisplayedPoints();
+          statusDot.className = "dot connected";
+          statusText.textContent = "Connected";
+          roiStatusText =
+            `Structure filtered: kept ${filtered.filteredCount.toLocaleString()}` +
+            ` / ${filtered.originalCount.toLocaleString()} points; roof_cut_z=${filtered.roofCutZ.toFixed(2)};` +
+            ` wall_margin=${filtered.wallBounds.wallMargin.toFixed(1)}m`;
+          setOperationStatus(
+            `Structure filter succeeded: removed ${filtered.removedCount.toLocaleString()} roof/wall points`,
+          );
+          updateCalibrationDisplay();
+        } catch (error) {
+          statusDot.className = "dot error";
+          statusText.textContent = "Filter error";
+          setOperationStatus(`Structure filter failed: ${error.message}`, true);
+        }
       }
 
       function projectPoint(matrix, x, y, z) {
@@ -542,6 +1749,68 @@
           x: ((ndcX + 1) * canvas.clientWidth) / 2,
           y: ((1 - ndcY) * canvas.clientHeight) / 2,
         };
+      }
+
+      function svgElement(name, attrs) {
+        const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+        for (const [key, value] of Object.entries(attrs)) {
+          element.setAttribute(key, String(value));
+        }
+        return element;
+      }
+
+      function projectedRoiPoints(region, matrix) {
+        if (!region || !region.points || region.points.length === 0) {
+          return [];
+        }
+        return region.points
+          .map((point) => projectPoint(matrix, point.x, point.y, 0))
+          .filter(Boolean);
+      }
+
+      function drawRoiShape(points, color, label) {
+        if (points.length === 0) {
+          return;
+        }
+
+        if (points.length > 1) {
+          const linePoints = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+          roiOverlay.appendChild(
+            svgElement("polyline", {
+              points: points.length === 4 ? `${linePoints} ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}` : linePoints,
+              fill: points.length === 4 ? color : "none",
+              "fill-opacity": points.length === 4 ? "0.08" : "0",
+              stroke: color,
+              "stroke-width": 2,
+              "stroke-linejoin": "round",
+            }),
+          );
+        }
+
+        points.forEach((point, index) => {
+          roiOverlay.appendChild(svgElement("circle", { cx: point.x, cy: point.y, r: 4, fill: color, stroke: "#0b0f14", "stroke-width": 1.5 }));
+          roiOverlay.appendChild(
+            svgElement("text", {
+              x: point.x + 7,
+              y: point.y - 7,
+              fill: "#f8fafc",
+              "font-size": 11,
+              "font-family": "ui-sans-serif, system-ui, sans-serif",
+            }),
+          ).textContent = label ? `${label}.${index + 1}` : `${index + 1}`;
+        });
+      }
+
+      function updateRoiOverlay() {
+        roiOverlay.setAttribute("viewBox", `0 0 ${canvas.clientWidth} ${canvas.clientHeight}`);
+        roiOverlay.replaceChildren();
+        const matrix = viewMatrix();
+        rois.forEach((region, index) => {
+          drawRoiShape(projectedRoiPoints(region, matrix), "#38bdf8", `R${index + 1}`);
+        });
+        if (roiDraftPoints.length > 0) {
+          drawRoiShape(projectedRoiPoints({ points: roiDraftPoints }, matrix), "#fbbf24", "new");
+        }
       }
 
       function nearestPointOnScreen(clientX, clientY) {
@@ -574,30 +1843,85 @@
         return best;
       }
 
-      function selectRoiCorner(event) {
-        const point = nearestPointOnScreen(event.clientX, event.clientY);
-        if (!point) {
-          return;
+      function screenPointOnXYPlane(clientX, clientY) {
+        const inverseMatrix = invertMatrix4(viewMatrix());
+        if (!inverseMatrix) {
+          return null;
         }
-        if (!roiFirstCorner) {
-          roiFirstCorner = point;
-          calibrationDisplay.textContent = `ROI first corner: x=${point.x.toFixed(2)} y=${point.y.toFixed(2)}`;
-          return;
-        }
-        roi = {
-          minX: Math.min(roiFirstCorner.x, point.x),
-          maxX: Math.max(roiFirstCorner.x, point.x),
-          minY: Math.min(roiFirstCorner.y, point.y),
-          maxY: Math.max(roiFirstCorner.y, point.y),
+
+        const rect = canvas.getBoundingClientRect();
+        const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
+        const nearPoint = transformPoint4(inverseMatrix, ndcX, ndcY, -1, 1);
+        const farPoint = transformPoint4(inverseMatrix, ndcX, ndcY, 1, 1);
+        const dir = {
+          x: farPoint.x - nearPoint.x,
+          y: farPoint.y - nearPoint.y,
+          z: farPoint.z - nearPoint.z,
         };
+        if (Math.abs(dir.z) < 1e-9) {
+          return null;
+        }
+
+        const t = -nearPoint.z / dir.z;
+        if (!Number.isFinite(t) || t < 0) {
+          return null;
+        }
+        return {
+          x: nearPoint.x + dir.x * t,
+          y: nearPoint.y + dir.y * t,
+          z: 0,
+        };
+      }
+
+      function selectRoiCorner(event) {
+        const point = screenPointOnXYPlane(event.clientX, event.clientY);
+        if (!point) {
+          roiStatusText = "ROI: no XY-plane intersection";
+          setOperationStatus("ROI point selection failed: click ray did not intersect the z=0 XY plane", true);
+          updateCalibrationDisplay();
+          return;
+        }
+        roiDraftPoints.push(point);
+        roiFirstCorner = roiDraftPoints[0] || null;
+        if (roiDraftPoints.length < 4) {
+          roiStatusText =
+            `ROI: point ${roiDraftPoints.length}/4 selected (${formatPoint(point)}); ` +
+            `select point ${roiDraftPoints.length + 1}/4`;
+          setOperationStatus(`ROI point ${roiDraftPoints.length}/4 selected: ${formatPoint(point)}`);
+          updateCalibrationDisplay();
+          return;
+        }
+
+        pushUndoState("ROI");
+        pileMask = null;
+        const points = roiDraftPoints.map((roiPoint) => ({ x: roiPoint.x, y: roiPoint.y, z: roiPoint.z }));
+        const xs = points.map((roiPoint) => roiPoint.x);
+        const ys = points.map((roiPoint) => roiPoint.y);
+        roi = {
+          minX: Math.min(...xs),
+          maxX: Math.max(...xs),
+          minY: Math.min(...ys),
+          maxY: Math.max(...ys),
+          points,
+        };
+        rois.push(cloneRoi(roi));
         roiFirstCorner = null;
+        roiDraftPoints = [];
         roiSelectionActive = false;
         volumeCalculationActive = false;
+        showFilteredRegion = false;
         selectRoiButton.classList.remove("active");
         calculateVolumeButton.classList.remove("active");
+        roiStatusText =
+          `ROI: ${rois.length} area${rois.length > 1 ? "s" : ""}; latest 4 points selected; ` +
+          points.map(formatPoint).join("; ");
         updateCalibrationDisplay();
         volumeDisplay.textContent = "Volume: -- m³";
         updateDisplayedPoints();
+        setOperationStatus(
+          `ROI ${rois.length} selected: full point cloud kept visible for adding more ROIs`,
+        );
       }
 
       function render(now) {
@@ -611,13 +1935,19 @@
         gl.uniformMatrix4fv(matrixLocation, false, viewMatrix());
         gl.uniform1f(pointSizeLocation, Number(pointSizeInput.value) * (window.devicePixelRatio || 1));
         gl.drawArrays(gl.POINTS, 0, pointCount);
+        updateRoiOverlay();
 
         frameCount++;
         if (now - lastMetricTime > 1000) {
           fps = Math.round((frameCount * 1000) / (now - lastMetricTime));
           frameCount = 0;
           lastMetricTime = now;
-          metrics.textContent = `${pointCount.toLocaleString()} points · ${fps} fps`;
+          if (sourceTotalPointCount > pointCount) {
+            metrics.textContent =
+              `${pointCount.toLocaleString()} shown / ${sourceTotalPointCount.toLocaleString()} points · ${fps} fps`;
+          } else {
+            metrics.textContent = `${pointCount.toLocaleString()} points · ${fps} fps`;
+          }
         }
         requestAnimationFrame(render);
       }
@@ -629,12 +1959,16 @@
         currentSocket = socket;
         socket.binaryType = "arraybuffer";
 
-        statusDot.className = "dot";
-        statusText.textContent = "Connecting";
+        if (sourceMode === "live") {
+          statusDot.className = "dot";
+          statusText.textContent = "Connecting";
+        }
 
         socket.onopen = () => {
-          statusDot.className = "dot connected";
-          statusText.textContent = "Connected";
+          if (sourceMode === "live") {
+            statusDot.className = "dot connected";
+            statusText.textContent = "Connected";
+          }
           sendCalibrationToServer();
         };
 
@@ -644,11 +1978,15 @@
             try {
               const message = JSON.parse(data);
               if (message.type === "volume") {
+                if (sourceMode === "live" && pileMask && volumeCalculationActive) {
+                  return;
+                }
                 const volume = Number(message.volume_m3);
                 const cells = Number(message.cells || 0);
                 const windowSeconds = Number(message.window_seconds || 0);
                 const windowText = windowSeconds > 0 ? ` · ${windowSeconds.toFixed(0)}s` : "";
                 volumeDisplay.textContent = `Volume: ${volume.toFixed(2)} m³ · ${cells.toLocaleString()} cells${windowText} · server`;
+                setOperationStatus(`Server volume updated: ${volume.toFixed(2)} m³`);
               }
             } catch {
               return;
@@ -658,22 +1996,29 @@
           if (!(data instanceof ArrayBuffer) || data.byteLength === 0) {
             return;
           }
-          latestPoints = new Float32Array(data);
-          updateDisplayedPoints();
+          latestLivePoints = new Float32Array(data);
+          if (sourceMode === "live") {
+            latestPoints = latestLivePoints;
+            updateDisplayedPoints();
+          }
         };
 
         socket.onclose = () => {
           if (currentSocket === socket) {
             currentSocket = null;
           }
-          statusDot.className = "dot error";
-          statusText.textContent = "Disconnected";
+          if (sourceMode === "live") {
+            statusDot.className = "dot error";
+            statusText.textContent = "Disconnected";
+          }
           setTimeout(connect, 1000);
         };
 
         socket.onerror = () => {
-          statusDot.className = "dot error";
-          statusText.textContent = "Connection error";
+          if (sourceMode === "live") {
+            statusDot.className = "dot error";
+            statusText.textContent = "Connection error";
+          }
           socket.close();
         };
       }
@@ -684,6 +2029,7 @@
           return;
         }
         dragging = true;
+        dragMode = event.button === 2 ? "pan" : "rotate";
         lastX = event.clientX;
         lastY = event.clientY;
         canvas.setPointerCapture(event.pointerId);
@@ -697,12 +2043,22 @@
         const dy = event.clientY - lastY;
         lastX = event.clientX;
         lastY = event.clientY;
-        yaw += dx * 0.006;
-        pitch = Math.max(-1.45, Math.min(1.2, pitch + dy * 0.006));
+        if (dragMode === "pan") {
+          const panScale = distance * 0.0015;
+          panX += dx * panScale;
+          panY -= dy * panScale;
+        } else {
+          yaw += dx * 0.006;
+          pitch = Math.max(-1.45, Math.min(1.2, pitch + dy * 0.006));
+        }
       });
 
       canvas.addEventListener("pointerup", () => {
         dragging = false;
+      });
+
+      canvas.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
       });
 
       canvas.addEventListener(
@@ -719,32 +2075,74 @@
       selectRoiButton.addEventListener("click", () => {
         roiSelectionActive = !roiSelectionActive;
         roiFirstCorner = null;
+        roiDraftPoints = [];
         selectRoiButton.classList.toggle("active", roiSelectionActive);
+        roiStatusText = roiSelectionActive ? "ROI: select point 1/4" : "ROI: selection canceled";
+        setOperationStatus(roiSelectionActive ? "ROI selection started: select point 1/4" : "ROI selection canceled");
         updateCalibrationDisplay();
       });
 
       calculateVolumeButton.addEventListener("click", () => {
-        if (!roi) {
+        if (rois.length === 0 && !roi && !pileMask) {
           volumeDisplay.textContent = "Volume: -- m³";
+          setOperationStatus("Calculate failed: select ROI or run Auto pile first", true);
           return;
         }
+        pushUndoState("Calculate");
         volumeCalculationActive = true;
+        showFilteredRegion = true;
         calculateVolumeButton.classList.add("active");
-        sendCalibrationToServer(true);
+        if (sourceMode === "static" || pileMask || rois.length > 0 || (roi && roi.points)) {
+          volumeDisplay.textContent = "Volume: calculating...";
+          if (sourceMode === "live" && (pileMask || rois.length > 0 || (roi && roi.points))) {
+            sendCalibrationToServer(false);
+          }
+          setOperationStatus(
+            pileMask
+              ? "Auto pile volume calculation started"
+              : rois.length > 0 || (roi && roi.points)
+                ? "ROI polygon volume calculation started"
+                : "Static volume calculation started",
+          );
+          setTimeout(() => computeBrowserVolume(true), 0);
+        } else {
+          sendCalibrationToServer(true);
+          setOperationStatus("Server volume calculation started");
+        }
       });
 
       undoRoiButton.addEventListener("click", () => {
-        roi = null;
-        roiFirstCorner = null;
-        roiSelectionActive = false;
-        volumeCalculationActive = false;
-        selectRoiButton.classList.remove("active");
-        calculateVolumeButton.classList.remove("active");
-        volumeDisplay.textContent = "Volume: -- m³";
-        updateCalibrationDisplay();
-        sendCalibrationToServer(false);
-        updateDisplayedPoints();
+        if (roiSelectionActive) {
+          roiSelectionActive = false;
+          roiFirstCorner = null;
+          roiDraftPoints = [];
+          selectRoiButton.classList.remove("active");
+          roiStatusText = rois.length > 0 || roi ? "ROI: selection canceled; previous ROI kept" : "ROI: none";
+          updateCalibrationDisplay();
+          setOperationStatus("ROI selection canceled");
+          return;
+        }
+        const previous = undoStack.pop();
+        if (!previous) {
+          setOperationStatus("Undo failed: no previous operation", true);
+          return;
+        }
+        restoreUndoState(previous);
+        setOperationStatus(`Undone: ${previous.label}`);
       });
+
+      loadLasButton.addEventListener("click", () => {
+        lasFileInput.click();
+      });
+
+      lasFileInput.addEventListener("change", () => {
+        loadLasFile(lasFileInput.files && lasFileInput.files[0]);
+        lasFileInput.value = "";
+      });
+
+      filterStructureButton.addEventListener("click", filterStaticStructure);
+
+      autoPileButton.addEventListener("click", autoDetectPile);
 
       window.addEventListener("resize", resizeCanvas);
       updateCalibrationDisplay();
