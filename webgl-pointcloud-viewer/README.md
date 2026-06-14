@@ -77,8 +77,28 @@ points. Then run `Fit ground`, optionally select one or more rough four-corner
 `ROI` areas, click `Auto pile`, and click `Calculate`. `Auto pile` selects the
 largest connected elevated stockpile region above the fitted ground plane inside
 each ROI. The volume calculation then uses the combined auto-pile masks directly.
-In static mode, these operations run locally in the browser. Refresh the page to
-return to the WebSocket stream.
+The same browser-side workflow can also be used on the live WebSocket point
+cloud. `Load LAS` and `Live` are parallel input modes: opening the page does not
+connect to the WebSocket stream until `Live` is clicked. Loading a `.las` file
+stops live receiving, and clicking `Live` starts or pauses WebSocket point-cloud
+receiving. `Pause live` sends `stream=false` and keeps the connection idle;
+`Clear` removes the current point cloud, resets processing state, and closes the
+WebSocket connection.
+
+The WebSocket server also requires an explicit `{"type":"stream","enabled":true}`
+command before it sends binary point-cloud frames to that browser client. When
+`Live` is idle or stopped, the backend will not push point-cloud payloads to the
+web page.
+
+In live mode, browser processing uses a sliding point-cloud window instead of
+only the newest sparse frame. The WebGL launch files default to
+`accumulate_map:=true map_window_seconds:=15.0`, so the WebSocket stream already
+sends a 15-second voxel map. Override it from ROS launch with
+`map_window_seconds:=30.0`, or set `accumulate_map:=false map_window_seconds:=0.0`
+to stream only the newest frame. If you are using another WebSocket source that
+does not accumulate points, add `?client_map_window_seconds=15` to the web URL as
+a browser-side fallback. `Filter structure` runs on the live window before
+display, ROI, auto-pile selection, and browser volume calculation.
 
 Enable stockpile volume display:
 

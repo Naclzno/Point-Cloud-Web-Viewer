@@ -179,7 +179,7 @@
       <div class="telemetry">
         <div class="status">
           <span id="statusDot" class="dot"></span>
-          <span id="statusText">Connecting</span>
+          <span id="statusText">Live idle</span>
         </div>
         <label>
           Point size
@@ -191,6 +191,7 @@
         </div>
       </div>
       <div class="actions">
+        <button id="liveStream" type="button">Live</button>
         <button id="loadLas" type="button">Load LAS</button>
         <input id="lasFile" type="file" accept=".las,.LAS" />
         <button id="filterStructure" type="button">Filter structure</button>
@@ -198,6 +199,7 @@
         <button id="selectRoi" type="button">ROI</button>
         <button id="autoPile" type="button">Auto pile</button>
         <button id="calculateVolume" type="button">Calculate</button>
+        <button id="clearViewer" type="button">Clear</button>
         <button id="undoRoi" type="button">Undo</button>
       </div>
     </div>
@@ -219,6 +221,8 @@
       const selectRoiButton = document.getElementById("selectRoi");
       const calculateVolumeButton = document.getElementById("calculateVolume");
       const undoRoiButton = document.getElementById("undoRoi");
+      const liveStreamButton = document.getElementById("liveStream");
+      const clearViewerButton = document.getElementById("clearViewer");
       const loadLasButton = document.getElementById("loadLas");
       const filterStructureButton = document.getElementById("filterStructure");
       const lasFileInput = document.getElementById("lasFile");
@@ -321,9 +325,19 @@
       let staticRawPoints = new Float32Array();
       let staticStructureFiltered = false;
       let latestLivePoints = new Float32Array();
+      let latestLiveRawPoints = new Float32Array();
+      let liveWindowPoints = new Float32Array();
+      let liveWindowFrames = [];
+      let liveReceiveActive = false;
+      let liveStructureFilterActive = false;
+      let liveSessionId = 0;
+      let liveReceiveEpoch = 0;
       const undoStack = [];
       const maxUndoSteps = 20;
       const maxRenderedPoints = 1200000;
+      const urlParams = new URLSearchParams(location.search);
+      const clientMapWindowSeconds = Math.max(0, Number(urlParams.get("client_map_window_seconds") || "0") || 0);
+      const maxLiveWindowPoints = 2000000;
       const staticVolumeGridSize = 0.1;
       const staticVolumeMinHeight = 0.05;
       const autoPileGridSize = 0.3;
@@ -347,6 +361,145 @@
       function setOperationStatus(message, isError = false) {
         operationStatus.textContent = message;
         operationStatus.style.color = isError ? "#fecaca" : "#e7edf3";
+      }
+
+      function updateLiveButton() {
+        if (sourceMode !== "live") {
+          liveStreamButton.textContent = "Live";
+          liveStreamButton.classList.remove("active");
+          return;
+        }
+        liveStreamButton.textContent = liveReceiveActive ? "Pause live" : "Live";
+        liveStreamButton.classList.toggle("active", liveReceiveActive);
+      }
+
+      function clearProcessingSelection() {
+        roi = null;
+        rois = [];
+        pileMask = null;
+        roiFirstCorner = null;
+        roiDraftPoints = [];
+        roiSelectionActive = false;
+        volumeCalculationActive = false;
+        showFilteredRegion = false;
+        groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+        groundFitted = false;
+        selectRoiButton.classList.remove("active");
+        calculateVolumeButton.classList.remove("active");
+        volumeDisplay.textContent = "Volume: -- m³";
+      }
+
+      function resetPointCloudState() {
+        latestPoints = new Float32Array();
+        displayedPoints = new Float32Array();
+        latestLivePoints = new Float32Array();
+        latestLiveRawPoints = new Float32Array();
+        liveWindowPoints = new Float32Array();
+        liveWindowFrames = [];
+        staticRawPoints = new Float32Array();
+        staticOriginalPointCount = 0;
+        staticStructureFiltered = false;
+        sourceTotalPointCount = 0;
+        updatePointBuffer(displayedPoints);
+      }
+
+      function resetLivePointCloudCache() {
+        liveReceiveEpoch++;
+        latestPoints = new Float32Array();
+        displayedPoints = new Float32Array();
+        latestLivePoints = new Float32Array();
+        latestLiveRawPoints = new Float32Array();
+        liveWindowPoints = new Float32Array();
+        liveWindowFrames = [];
+        sourceTotalPointCount = 0;
+        updatePointBuffer(displayedPoints);
+      }
+
+      function closeCurrentSocket() {
+        liveSessionId++;
+        if (!currentSocket) {
+          return;
+        }
+        const socket = currentSocket;
+        currentSocket = null;
+        try {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "stream", enabled: false }));
+          }
+        } catch {
+          // Closing is best-effort; stale callbacks are blocked by liveSessionId.
+        }
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
+
+      function stopLiveStreaming() {
+        liveReceiveEpoch++;
+        liveReceiveActive = false;
+        sendStreamControl(false);
+      }
+
+      function clearViewerState() {
+        undoStack.length = 0;
+        liveReceiveEpoch++;
+        liveReceiveActive = false;
+        closeCurrentSocket();
+        sourceMode = "live";
+        clearProcessingSelection();
+        resetPointCloudState();
+        roiStatusText = "ROI: none";
+        statusDot.className = "dot";
+        statusText.textContent = "Live idle";
+        metrics.textContent = "0 points";
+        updateLiveButton();
+        updateCalibrationDisplay();
+        sendCalibrationToServer(false);
+        setOperationStatus("Cleared point cloud and processing state; live receive stopped");
+      }
+
+      function buildLiveWindowPoints() {
+        if (liveWindowFrames.length === 0) {
+          return new Float32Array();
+        }
+        let totalValues = 0;
+        for (const frame of liveWindowFrames) {
+          totalValues += frame.points.length;
+        }
+        const output = new Float32Array(totalValues);
+        let offset = 0;
+        for (const frame of liveWindowFrames) {
+          output.set(frame.points, offset);
+          offset += frame.points.length;
+        }
+        return output;
+      }
+
+      function appendLiveFrame(points) {
+        if (clientMapWindowSeconds <= 0) {
+          liveWindowFrames = [];
+          liveWindowPoints = points;
+          return points;
+        }
+
+        const now = performance.now() / 1000;
+        liveWindowFrames.push({ time: now, points });
+        const minTime = now - clientMapWindowSeconds;
+        while (liveWindowFrames.length > 0 && liveWindowFrames[0].time < minTime) {
+          liveWindowFrames.shift();
+        }
+
+        let totalPoints = liveWindowFrames.reduce((sum, frame) => sum + frame.points.length / 3, 0);
+        while (totalPoints > maxLiveWindowPoints && liveWindowFrames.length > 1) {
+          const removed = liveWindowFrames.shift();
+          totalPoints -= removed.points.length / 3;
+        }
+        liveWindowPoints = buildLiveWindowPoints();
+        return liveWindowPoints;
       }
 
       function cloneRoi(value) {
@@ -419,6 +572,13 @@
           staticStructureFiltered,
           latestPoints,
           latestLivePoints,
+          latestLiveRawPoints,
+          liveWindowPoints,
+          liveWindowFrames: liveWindowFrames.map((frame) => ({ time: frame.time, points: frame.points })),
+          liveReceiveActive,
+          liveStructureFilterActive,
+          liveSessionId,
+          liveReceiveEpoch,
           statusClassName: statusDot.className,
           statusText: statusText.textContent,
           metricsText: metrics.textContent,
@@ -451,11 +611,21 @@
         staticStructureFiltered = state.staticStructureFiltered;
         latestPoints = state.latestPoints;
         latestLivePoints = state.latestLivePoints;
+        latestLiveRawPoints = state.latestLiveRawPoints;
+        liveWindowPoints = state.liveWindowPoints || new Float32Array();
+        liveWindowFrames = state.liveWindowFrames
+          ? state.liveWindowFrames.map((frame) => ({ time: frame.time, points: frame.points }))
+          : [];
+        liveReceiveActive = Boolean(state.liveReceiveActive);
+        liveStructureFilterActive = Boolean(state.liveStructureFilterActive);
+        liveSessionId = state.liveSessionId || 0;
+        liveReceiveEpoch = state.liveReceiveEpoch || 0;
         volumeDisplay.textContent = state.volumeText;
         statusDot.className = state.statusClassName;
         statusText.textContent = state.statusText;
         selectRoiButton.classList.toggle("active", roiSelectionActive);
         calculateVolumeButton.classList.toggle("active", volumeCalculationActive);
+        updateLiveButton();
         updateCalibrationDisplay();
         updateDisplayedPoints();
         if (state.metricsText) {
@@ -628,6 +798,13 @@
             roi_max_y: roi ? roi.maxY : 0,
           }),
         );
+      }
+
+      function sendStreamControl(enabled) {
+        if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        currentSocket.send(JSON.stringify({ type: "stream", enabled }));
       }
 
       function pointInRoiShape(region, x, y) {
@@ -1211,7 +1388,7 @@
         let maxGy = Number.NEGATIVE_INFINITY;
 
         for (const searchRegion of searchRegions) {
-          const components = detectPilesInRegion(searchRegion);
+          const components = detectPilesInRegion(searchRegion) || [];
           if (components.length === 0) {
             continue;
           }
@@ -1659,12 +1836,15 @@
           const result = await parseLasFile(file);
           pushUndoState("Load LAS", undoState);
           sourceMode = "static";
+          liveReceiveActive = false;
+          closeCurrentSocket();
           staticRawPoints = result.points;
           staticStructureFiltered = false;
           latestPoints = result.points;
           staticOriginalPointCount = result.pointCount;
           sourceTotalPointCount = result.pointCount;
           updateDisplayedPoints();
+          updateLiveButton();
           statusDot.className = "dot connected";
           statusText.textContent = "Connected";
           volumeDisplay.textContent = "Volume: -- m³";
@@ -1684,46 +1864,111 @@
         }
       }
 
-      async function filterStaticStructure() {
-        if (sourceMode !== "static" || staticRawPoints.length === 0) {
-          setOperationStatus("Filter structure failed: load a LAS file first", true);
+      function switchToLiveStream() {
+        const wasLive = sourceMode === "live";
+        const wasReceiving = liveReceiveActive;
+        const undoState = captureUndoState(wasLive ? "Toggle live" : "Live stream");
+        sourceMode = "live";
+        liveReceiveActive = wasLive ? !liveReceiveActive : true;
+        pushUndoState(wasLive ? "Toggle live" : "Live stream", undoState);
+        if (!wasLive) {
+          clearProcessingSelection();
+        }
+        if (liveReceiveActive && !wasReceiving) {
+          resetLivePointCloudCache();
+        }
+        roiStatusText = liveReceiveActive
+          ? liveStructureFilterActive
+            ? `Live stream: receiving ${clientMapWindowSeconds > 0 ? `${clientMapWindowSeconds}s window` : "single frame"} with structure filter`
+            : `Live stream: receiving ${clientMapWindowSeconds > 0 ? `${clientMapWindowSeconds}s window` : "single frame"}`
+          : "Live stream: paused";
+        latestPoints = liveReceiveActive
+          ? latestPoints
+          : latestLivePoints.length > 0
+            ? latestLivePoints
+            : liveWindowPoints.length > 0
+              ? liveWindowPoints
+              : latestLiveRawPoints;
+        sourceTotalPointCount = Math.floor(latestPoints.length / 3);
+        statusDot.className = currentSocket && currentSocket.readyState === WebSocket.OPEN ? "dot connected" : "dot";
+        statusText.textContent = liveReceiveActive
+          ? currentSocket && currentSocket.readyState === WebSocket.OPEN
+            ? "Connected"
+            : "Connecting"
+          : "Live idle";
+        updateLiveButton();
+        updateDisplayedPoints();
+        updateCalibrationDisplay();
+        sendCalibrationToServer(false);
+        if (liveReceiveActive) {
+          if (!currentSocket || currentSocket.readyState === WebSocket.CLOSED || currentSocket.readyState === WebSocket.CLOSING) {
+            connect();
+          } else {
+            sendStreamControl(true);
+          }
+        } else if (currentSocket) {
+          stopLiveStreaming();
+        }
+        setOperationStatus(
+          liveReceiveActive
+            ? latestPoints.length > 0
+              ? `Live receive active: ${sourceTotalPointCount.toLocaleString()} window points`
+              : "Live receive active: waiting for point cloud"
+            : "Live receive stopped; current point cloud kept",
+        );
+      }
+
+      function applyStructureFilterToPoints(points) {
+        return filterStaticWarehouseStructure(points);
+      }
+
+      async function filterStructure() {
+        const isStatic = sourceMode === "static";
+        const inputPoints = isStatic
+          ? staticRawPoints
+          : liveWindowPoints.length > 0
+            ? liveWindowPoints
+            : latestLivePoints.length > 0
+              ? latestLivePoints
+              : latestLiveRawPoints;
+        if (inputPoints.length === 0) {
+          setOperationStatus(
+            isStatic
+              ? "Filter structure failed: load a LAS file first"
+              : "Filter structure failed: wait for live point cloud first",
+            true,
+          );
           return;
         }
 
         const undoState = captureUndoState("Filter structure");
-        roi = null;
-        rois = [];
-        pileMask = null;
-        roiFirstCorner = null;
-        roiDraftPoints = [];
-        roiSelectionActive = false;
-        volumeCalculationActive = false;
-        showFilteredRegion = false;
-        groundPlane = { a: 0, b: 0, c: 1, d: 0 };
-        groundFitted = false;
-        selectRoiButton.classList.remove("active");
-        calculateVolumeButton.classList.remove("active");
-        volumeDisplay.textContent = "Volume: -- m³";
+        clearProcessingSelection();
         statusText.textContent = "Filtering";
         setOperationStatus("Filtering warehouse roof and wall structures...");
         await new Promise((resolve) => requestAnimationFrame(resolve));
 
         try {
-          const filtered = filterStaticWarehouseStructure(staticRawPoints);
+          const filtered = applyStructureFilterToPoints(inputPoints);
           pushUndoState("Filter structure", undoState);
-          latestPoints = filtered.points;
-          staticStructureFiltered = true;
-          staticOriginalPointCount = filtered.originalCount;
+          if (isStatic) {
+            latestPoints = filtered.points;
+            staticStructureFiltered = true;
+            staticOriginalPointCount = filtered.originalCount;
+          } else {
+            liveStructureFilterActive = true;
+            latestLivePoints = filtered.points;
+            latestPoints = latestLivePoints;
+          }
           sourceTotalPointCount = filtered.filteredCount;
           updateDisplayedPoints();
           statusDot.className = "dot connected";
           statusText.textContent = "Connected";
           roiStatusText =
-            `Structure filtered: kept ${filtered.filteredCount.toLocaleString()}` +
+            `${isStatic ? "Static" : "Live"} structure filter active: kept ${filtered.filteredCount.toLocaleString()}` +
             ` / ${filtered.originalCount.toLocaleString()} points; roof_cut_z=${filtered.roofCutZ.toFixed(2)};` +
             ` wall_margin=${filtered.wallBounds.wallMargin.toFixed(1)}m`;
           setOperationStatus(
-            `Structure filter succeeded: removed ${filtered.removedCount.toLocaleString()} roof/wall points`,
+            `${isStatic ? "Static" : "Live"} structure filter succeeded: removed ${filtered.removedCount.toLocaleString()} roof/wall points`,
           );
           updateCalibrationDisplay();
         } catch (error) {
@@ -1955,24 +2200,34 @@
       function connect() {
         const defaultUrl = `ws://${location.hostname || "127.0.0.1"}:8766`;
         const url = new URLSearchParams(location.search).get("ws") || defaultUrl;
+        const sessionId = ++liveSessionId;
         const socket = new WebSocket(url);
         currentSocket = socket;
         socket.binaryType = "arraybuffer";
 
-        if (sourceMode === "live") {
+        if (sourceMode === "live" && liveReceiveActive) {
           statusDot.className = "dot";
           statusText.textContent = "Connecting";
         }
 
         socket.onopen = () => {
+          if (sessionId !== liveSessionId || currentSocket !== socket) {
+            socket.close();
+            return;
+          }
           if (sourceMode === "live") {
             statusDot.className = "dot connected";
-            statusText.textContent = "Connected";
+            statusText.textContent = liveReceiveActive ? "Connected" : "Live idle";
           }
+          sendStreamControl(liveReceiveActive);
           sendCalibrationToServer();
         };
 
         socket.onmessage = (event) => {
+          if (sessionId !== liveSessionId || currentSocket !== socket) {
+            return;
+          }
+          const receiveEpoch = liveReceiveEpoch;
           const data = event.data;
           if (typeof data === "string") {
             try {
@@ -1996,7 +2251,25 @@
           if (!(data instanceof ArrayBuffer) || data.byteLength === 0) {
             return;
           }
-          latestLivePoints = new Float32Array(data);
+          if (!liveReceiveActive) {
+            return;
+          }
+          if (receiveEpoch !== liveReceiveEpoch) {
+            return;
+          }
+          latestLiveRawPoints = new Float32Array(data);
+          const liveInputPoints = appendLiveFrame(latestLiveRawPoints);
+          if (liveStructureFilterActive) {
+            try {
+              latestLivePoints = applyStructureFilterToPoints(liveInputPoints).points;
+            } catch (error) {
+              liveStructureFilterActive = false;
+              latestLivePoints = liveInputPoints;
+              setOperationStatus(`Live structure filter disabled: ${error.message}`, true);
+            }
+          } else {
+            latestLivePoints = liveInputPoints;
+          }
           if (sourceMode === "live") {
             latestPoints = latestLivePoints;
             updateDisplayedPoints();
@@ -2004,20 +2277,28 @@
         };
 
         socket.onclose = () => {
+          if (sessionId !== liveSessionId) {
+            return;
+          }
           if (currentSocket === socket) {
             currentSocket = null;
           }
           if (sourceMode === "live") {
             statusDot.className = "dot error";
-            statusText.textContent = "Disconnected";
+            statusText.textContent = liveReceiveActive ? "Disconnected" : "Live idle";
           }
-          setTimeout(connect, 1000);
+          if (sourceMode === "live" && liveReceiveActive) {
+            setTimeout(connect, 1000);
+          }
         };
 
         socket.onerror = () => {
+          if (sessionId !== liveSessionId || currentSocket !== socket) {
+            return;
+          }
           if (sourceMode === "live") {
             statusDot.className = "dot error";
-            statusText.textContent = "Connection error";
+            statusText.textContent = liveReceiveActive ? "Connection error" : "Live idle";
           }
           socket.close();
         };
@@ -2140,13 +2421,17 @@
         lasFileInput.value = "";
       });
 
-      filterStructureButton.addEventListener("click", filterStaticStructure);
+      liveStreamButton.addEventListener("click", switchToLiveStream);
+
+      clearViewerButton.addEventListener("click", clearViewerState);
+
+      filterStructureButton.addEventListener("click", filterStructure);
 
       autoPileButton.addEventListener("click", autoDetectPile);
 
       window.addEventListener("resize", resizeCanvas);
+      updateLiveButton();
       updateCalibrationDisplay();
-      connect();
       requestAnimationFrame(render);
     </script>
   </body>

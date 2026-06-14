@@ -527,6 +527,14 @@ private:
     last_volume_time_ = now;
   }
 
+  std::optional<bool> stream_command_enabled(const std::string & json) const
+  {
+    if (json.find("\"type\"") == std::string::npos || json.find("stream") == std::string::npos) {
+      return std::nullopt;
+    }
+    return json_bool(json, "enabled", false);
+  }
+
   bool apply_client_command(const std::string & json)
   {
     if (json.find("\"type\"") == std::string::npos ||
@@ -588,7 +596,7 @@ private:
     return true;
   }
 
-  bool read_pending_client_messages(websocket::stream<tcp::socket> & ws)
+  bool read_pending_client_messages(websocket::stream<tcp::socket> & ws, bool & stream_enabled)
   {
     boost::system::error_code ec;
     const auto available = ws.next_layer().available(ec);
@@ -603,7 +611,14 @@ private:
     }
     if (ws.got_text()) {
       const auto message = boost::beast::buffers_to_string(buffer.data());
-      apply_client_command(message);
+      if (const auto enabled = stream_command_enabled(message)) {
+        stream_enabled = *enabled;
+        RCLCPP_INFO(
+          get_logger(), "WebSocket client %s point-cloud stream.",
+          stream_enabled ? "enabled" : "disabled");
+      } else {
+        apply_client_command(message);
+      }
     }
     return true;
   }
@@ -617,6 +632,7 @@ private:
       ws.binary(true);
 
       std::size_t last_sequence = 0;
+      bool stream_enabled = false;
       while (!stopping_.load()) {
         std::shared_ptr<const std::vector<uint8_t>> payload;
         std::string volume_json;
@@ -636,7 +652,7 @@ private:
           }
         }
 
-        if (!read_pending_client_messages(ws)) {
+        if (!read_pending_client_messages(ws, stream_enabled)) {
           return;
         }
 
@@ -644,11 +660,11 @@ private:
           continue;
         }
 
-        if (!volume_json.empty()) {
+        if (stream_enabled && !volume_json.empty()) {
           ws.text(true);
           ws.write(boost::asio::buffer(volume_json));
         }
-        if (payload && !payload->empty()) {
+        if (stream_enabled && payload && !payload->empty()) {
           ws.binary(true);
           ws.write(boost::asio::buffer(*payload));
         }
