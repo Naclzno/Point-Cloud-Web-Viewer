@@ -90,6 +90,18 @@ command before it sends binary point-cloud frames to that browser client. When
 `Live` is idle or stopped, the backend will not push point-cloud payloads to the
 web page.
 
+For multiple live LiDAR sources, run each WebSocket server on a different port
+and pass the source list in the URL. With the default launch files, RS-LiDAR uses
+port `8766` and Unitree uses port `8767`, so open:
+
+```text
+http://<ubuntu-ip>:8082/?sources=RS=8766,Unitree=8767
+```
+
+The source selector is hidden when only one source is configured. Switching the
+source closes the previous WebSocket, clears the current point cloud and
+processing state, and waits for `Live` to be clicked again.
+
 In live mode, browser processing uses a sliding point-cloud window instead of
 only the newest sparse frame. The WebGL launch files default to
 `accumulate_map:=true map_window_seconds:=15.0`, so the WebSocket stream already

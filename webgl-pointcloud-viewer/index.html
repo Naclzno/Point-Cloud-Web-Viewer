@@ -128,6 +128,20 @@
         display: none;
       }
 
+      .source-select {
+        min-height: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 6px;
+        background: rgba(15, 23, 42, 0.9);
+        color: #f8fafc;
+        font: inherit;
+        padding: 4px 8px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
       .metrics {
         font-variant-numeric: tabular-nums;
         font-size: 12px;
@@ -191,6 +205,7 @@
         </div>
       </div>
       <div class="actions">
+        <select id="sourceSelect" class="source-select hidden" aria-label="Point cloud source"></select>
         <button id="liveStream" type="button">Live</button>
         <button id="loadLas" type="button">Load LAS</button>
         <input id="lasFile" type="file" accept=".las,.LAS" />
@@ -221,6 +236,7 @@
       const selectRoiButton = document.getElementById("selectRoi");
       const calculateVolumeButton = document.getElementById("calculateVolume");
       const undoRoiButton = document.getElementById("undoRoi");
+      const sourceSelect = document.getElementById("sourceSelect");
       const liveStreamButton = document.getElementById("liveStream");
       const clearViewerButton = document.getElementById("clearViewer");
       const loadLasButton = document.getElementById("loadLas");
@@ -332,12 +348,19 @@
       let liveStructureFilterActive = false;
       let liveSessionId = 0;
       let liveReceiveEpoch = 0;
+      let receivedLiveFrameCount = 0;
+      let lastLiveReceiveStatusTime = 0;
       const undoStack = [];
       const maxUndoSteps = 20;
       const maxRenderedPoints = 1200000;
       const urlParams = new URLSearchParams(location.search);
       const clientMapWindowSeconds = Math.max(0, Number(urlParams.get("client_map_window_seconds") || "0") || 0);
       const maxLiveWindowPoints = 2000000;
+      const pointCloudSources = parsePointCloudSources();
+      let selectedSourceIndex = Math.max(
+        0,
+        Math.min(pointCloudSources.length - 1, Number(urlParams.get("source") || "0") || 0),
+      );
       const staticVolumeGridSize = 0.1;
       const staticVolumeMinHeight = 0.05;
       const autoPileGridSize = 0.3;
@@ -361,6 +384,82 @@
       function setOperationStatus(message, isError = false) {
         operationStatus.textContent = message;
         operationStatus.style.color = isError ? "#fecaca" : "#e7edf3";
+      }
+
+      function normalizeWebSocketUrl(value) {
+        if (!value) {
+          return `ws://${location.hostname || "127.0.0.1"}:8766`;
+        }
+        if (/^\d+$/.test(value)) {
+          return `ws://${location.hostname || "127.0.0.1"}:${value}`;
+        }
+        if (value.startsWith(":")) {
+          return `ws://${location.hostname || "127.0.0.1"}${value}`;
+        }
+        if (value.startsWith("ws://") || value.startsWith("wss://")) {
+          return value;
+        }
+        return `ws://${value}`;
+      }
+
+      function parsePointCloudSources() {
+        const explicitWs = urlParams.get("ws");
+        if (explicitWs) {
+          return [{ name: "Point cloud", url: normalizeWebSocketUrl(explicitWs) }];
+        }
+
+        const sourcesParam = urlParams.get("sources");
+        if (!sourcesParam) {
+          return [
+            { name: "RS", url: normalizeWebSocketUrl("8766") },
+            { name: "Unitree", url: normalizeWebSocketUrl("8767") },
+          ];
+        }
+
+        const sources = sourcesParam
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .map((entry, index) => {
+            const separator = entry.indexOf("=");
+            if (separator >= 0) {
+              return {
+                name: decodeURIComponent(entry.slice(0, separator)) || `Source ${index + 1}`,
+                url: normalizeWebSocketUrl(entry.slice(separator + 1)),
+              };
+            }
+            return { name: `Source ${index + 1}`, url: normalizeWebSocketUrl(entry) };
+          });
+
+        return sources.length > 0
+          ? sources
+          : [
+              { name: "RS", url: normalizeWebSocketUrl("8766") },
+              { name: "Unitree", url: normalizeWebSocketUrl("8767") },
+            ];
+      }
+
+      function currentPointCloudSource() {
+        return pointCloudSources[selectedSourceIndex] || pointCloudSources[0];
+      }
+
+      function receivingStatusText(sourceName) {
+        if (/point\s*cloud/i.test(sourceName)) {
+          return `Receiving ${sourceName}`;
+        }
+        return `Receiving ${sourceName} point cloud`;
+      }
+
+      function setupSourceSelect() {
+        sourceSelect.replaceChildren();
+        pointCloudSources.forEach((source, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = source.name;
+          sourceSelect.appendChild(option);
+        });
+        sourceSelect.value = String(selectedSourceIndex);
+        sourceSelect.classList.toggle("hidden", pointCloudSources.length <= 1);
       }
 
       function updateLiveButton() {
@@ -441,6 +540,8 @@
       function stopLiveStreaming() {
         liveReceiveEpoch++;
         liveReceiveActive = false;
+        receivedLiveFrameCount = 0;
+        lastLiveReceiveStatusTime = 0;
         sendStreamControl(false);
       }
 
@@ -448,6 +549,8 @@
         undoStack.length = 0;
         liveReceiveEpoch++;
         liveReceiveActive = false;
+        receivedLiveFrameCount = 0;
+        lastLiveReceiveStatusTime = 0;
         closeCurrentSocket();
         sourceMode = "live";
         clearProcessingSelection();
@@ -460,6 +563,31 @@
         updateCalibrationDisplay();
         sendCalibrationToServer(false);
         setOperationStatus("Cleared point cloud and processing state; live receive stopped");
+      }
+
+      function switchPointCloudSource(index) {
+        const nextIndex = Math.max(0, Math.min(pointCloudSources.length - 1, index));
+        if (nextIndex === selectedSourceIndex) {
+          return;
+        }
+        selectedSourceIndex = nextIndex;
+        sourceSelect.value = String(selectedSourceIndex);
+        undoStack.length = 0;
+        liveReceiveEpoch++;
+        liveReceiveActive = false;
+        receivedLiveFrameCount = 0;
+        lastLiveReceiveStatusTime = 0;
+        closeCurrentSocket();
+        sourceMode = "live";
+        clearProcessingSelection();
+        resetPointCloudState();
+        roiStatusText = `Source: ${currentPointCloudSource().name}`;
+        statusDot.className = "dot";
+        statusText.textContent = "Live idle";
+        metrics.textContent = "0 points";
+        updateLiveButton();
+        updateCalibrationDisplay();
+        setOperationStatus(`Selected source: ${currentPointCloudSource().name}`);
       }
 
       function buildLiveWindowPoints() {
@@ -1913,7 +2041,7 @@
           liveReceiveActive
             ? latestPoints.length > 0
               ? `Live receive active: ${sourceTotalPointCount.toLocaleString()} window points`
-              : "Live receive active: waiting for point cloud"
+              : `Live receive active: waiting for ${receivingStatusText(currentPointCloudSource().name).replace(/^Receiving /, "")}`
             : "Live receive stopped; current point cloud kept",
         );
       }
@@ -2198,16 +2326,19 @@
       }
 
       function connect() {
-        const defaultUrl = `ws://${location.hostname || "127.0.0.1"}:8766`;
-        const url = new URLSearchParams(location.search).get("ws") || defaultUrl;
+        const source = currentPointCloudSource();
+        const url = source.url;
         const sessionId = ++liveSessionId;
         const socket = new WebSocket(url);
         currentSocket = socket;
         socket.binaryType = "arraybuffer";
+        receivedLiveFrameCount = 0;
+        lastLiveReceiveStatusTime = 0;
 
         if (sourceMode === "live" && liveReceiveActive) {
           statusDot.className = "dot";
           statusText.textContent = "Connecting";
+          setOperationStatus(`Connecting to ${source.name}: ${url}`);
         }
 
         socket.onopen = () => {
@@ -2217,10 +2348,13 @@
           }
           if (sourceMode === "live") {
             statusDot.className = "dot connected";
-            statusText.textContent = liveReceiveActive ? "Connected" : "Live idle";
+            statusText.textContent = liveReceiveActive ? `Connected: ${source.name}` : "Live idle";
           }
           sendStreamControl(liveReceiveActive);
           sendCalibrationToServer();
+          if (liveReceiveActive) {
+            setOperationStatus(`Connected to ${source.name}; waiting for point cloud frames`);
+          }
         };
 
         socket.onmessage = (event) => {
@@ -2257,6 +2391,7 @@
           if (receiveEpoch !== liveReceiveEpoch) {
             return;
           }
+          receivedLiveFrameCount++;
           latestLiveRawPoints = new Float32Array(data);
           const liveInputPoints = appendLiveFrame(latestLiveRawPoints);
           if (liveStructureFilterActive) {
@@ -2273,6 +2408,11 @@
           if (sourceMode === "live") {
             latestPoints = latestLivePoints;
             updateDisplayedPoints();
+            const now = performance.now();
+            if (receivedLiveFrameCount === 1 || now - lastLiveReceiveStatusTime > 2000) {
+              setOperationStatus(receivingStatusText(source.name));
+              lastLiveReceiveStatusTime = now;
+            }
           }
         };
 
@@ -2286,6 +2426,9 @@
           if (sourceMode === "live") {
             statusDot.className = "dot error";
             statusText.textContent = liveReceiveActive ? "Disconnected" : "Live idle";
+            if (liveReceiveActive) {
+              setOperationStatus(`Disconnected from ${source.name}: ${url}`, true);
+            }
           }
           if (sourceMode === "live" && liveReceiveActive) {
             setTimeout(connect, 1000);
@@ -2299,6 +2442,9 @@
           if (sourceMode === "live") {
             statusDot.className = "dot error";
             statusText.textContent = liveReceiveActive ? "Connection error" : "Live idle";
+            if (liveReceiveActive) {
+              setOperationStatus(`Connection error for ${source.name}: ${url}`, true);
+            }
           }
           socket.close();
         };
@@ -2429,7 +2575,12 @@
 
       autoPileButton.addEventListener("click", autoDetectPile);
 
+      sourceSelect.addEventListener("change", () => {
+        switchPointCloudSource(Number(sourceSelect.value));
+      });
+
       window.addEventListener("resize", resizeCanvas);
+      setupSourceSelect();
       updateLiveButton();
       updateCalibrationDisplay();
       requestAnimationFrame(render);

@@ -9,6 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     input_topic = LaunchConfiguration("input_topic")
+    input_qos = LaunchConfiguration("input_qos")
     publish_rate_hz = LaunchConfiguration("publish_rate_hz")
     voxel_size = LaunchConfiguration("voxel_size")
     accumulate_map = LaunchConfiguration("accumulate_map")
@@ -40,6 +41,7 @@ def generate_launch_description():
         [
             SetEnvironmentVariable("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp"),
             DeclareLaunchArgument("input_topic", default_value="/rslidar_points"),
+            DeclareLaunchArgument("input_qos", default_value="default"),
             DeclareLaunchArgument("publish_rate_hz", default_value="5.0"),
             DeclareLaunchArgument("voxel_size", default_value="0.10"),
             DeclareLaunchArgument("accumulate_map", default_value="true"),
@@ -61,7 +63,7 @@ def generate_launch_description():
             DeclareLaunchArgument("record_bag", default_value="false"),
             DeclareLaunchArgument("bag_output", default_value="/tmp/rslidar_recent_bag"),
             DeclareLaunchArgument("bag_duration", default_value="3.0"),
-            DeclareLaunchArgument("use_rviz", default_value="false"),
+            DeclareLaunchArgument("use_rviz", default_value="true"),
             Node(
                 namespace="rslidar_sdk",
                 package="rslidar_sdk",
@@ -73,11 +75,12 @@ def generate_launch_description():
             Node(
                 package="pointcloud_web_tools",
                 executable="pointcloud_ws_server",
-                name="pointcloud_ws_server",
+                name="rslidar_pointcloud_ws_server",
                 output="screen",
                 parameters=[
                     {
                         "input_topic": input_topic,
+                        "input_qos": input_qos,
                         "publish_rate_hz": ParameterValue(publish_rate_hz, value_type=float),
                         "voxel_size": ParameterValue(voxel_size, value_type=float),
                         "accumulate_map": ParameterValue(accumulate_map, value_type=bool),

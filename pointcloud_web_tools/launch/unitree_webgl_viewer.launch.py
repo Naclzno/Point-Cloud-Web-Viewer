@@ -21,6 +21,7 @@ def generate_launch_description():
     imu_topic = LaunchConfiguration("imu_topic")
     imu_frame = LaunchConfiguration("imu_frame")
     publish_rate_hz = LaunchConfiguration("publish_rate_hz")
+    input_qos = LaunchConfiguration("input_qos")
     voxel_size = LaunchConfiguration("voxel_size")
     accumulate_map = LaunchConfiguration("accumulate_map")
     map_voxel_size = LaunchConfiguration("map_voxel_size")
@@ -59,6 +60,7 @@ def generate_launch_description():
             DeclareLaunchArgument("imu_topic", default_value="unilidar/imu"),
             DeclareLaunchArgument("imu_frame", default_value="unilidar_imu"),
             DeclareLaunchArgument("publish_rate_hz", default_value="5.0"),
+            DeclareLaunchArgument("input_qos", default_value="sensor_data"),
             DeclareLaunchArgument("voxel_size", default_value="0.10"),
             DeclareLaunchArgument("accumulate_map", default_value="true"),
             DeclareLaunchArgument("map_voxel_size", default_value="0.10"),
@@ -74,7 +76,7 @@ def generate_launch_description():
             DeclareLaunchArgument("ground_plane_b", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_c", default_value="1.0"),
             DeclareLaunchArgument("ground_plane_d", default_value="0.0"),
-            DeclareLaunchArgument("ws_port", default_value="8766"),
+            DeclareLaunchArgument("ws_port", default_value="8767"),
             DeclareLaunchArgument("ws_address", default_value="0.0.0.0"),
             DeclareLaunchArgument("record_bag", default_value="false"),
             DeclareLaunchArgument("bag_output", default_value="/tmp/unitree_recent_bag"),
@@ -118,11 +120,12 @@ def generate_launch_description():
             Node(
                 package="pointcloud_web_tools",
                 executable="pointcloud_ws_server",
-                name="pointcloud_ws_server",
+                name="unitree_pointcloud_ws_server",
                 output="screen",
                 parameters=[
                     {
                         "input_topic": cloud_topic,
+                        "input_qos": input_qos,
                         "publish_rate_hz": ParameterValue(publish_rate_hz, value_type=float),
                         "voxel_size": ParameterValue(voxel_size, value_type=float),
                         "accumulate_map": ParameterValue(accumulate_map, value_type=bool),

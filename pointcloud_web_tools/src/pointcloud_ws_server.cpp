@@ -239,6 +239,7 @@ public:
   : Node("pointcloud_ws_server")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/rslidar_points");
+    input_qos_ = declare_parameter<std::string>("input_qos", "sensor_data");
     publish_rate_hz_ = declare_parameter<double>("publish_rate_hz", 5.0);
     voxel_size_ = std::max(0.001, declare_parameter<double>("voxel_size", 0.10));
     accumulate_map_ = declare_parameter<bool>("accumulate_map", false);
@@ -271,16 +272,23 @@ public:
       accumulate_map_ = true;
     }
 
-    auto qos = rclcpp::SensorDataQoS().keep_last(1);
-    subscription_ = create_subscription<PointCloud2>(
-      input_topic_, qos, std::bind(&PointCloudWsServer::on_pointcloud, this, std::placeholders::_1));
+    if (input_qos_ == "default" || input_qos_ == "reliable") {
+      subscription_ = create_subscription<PointCloud2>(
+        input_topic_, rclcpp::QoS(rclcpp::KeepLast(10)),
+        std::bind(&PointCloudWsServer::on_pointcloud, this, std::placeholders::_1));
+    } else {
+      input_qos_ = "sensor_data";
+      subscription_ = create_subscription<PointCloud2>(
+        input_topic_, rclcpp::SensorDataQoS().keep_last(1),
+        std::bind(&PointCloudWsServer::on_pointcloud, this, std::placeholders::_1));
+    }
 
     server_thread_ = std::thread([this]() { run_server(); });
 
     RCLCPP_INFO(
       get_logger(),
-      "Point cloud WebSocket server listening on ws://%s:%u, input_topic=%s, publish_rate_hz=%.3f, voxel_size=%.3f, accumulate_map=%s, map_voxel_size=%.3f, map_window_seconds=%.3f, enable_volume=%s",
-      address_.c_str(), port_, input_topic_.c_str(), publish_rate_hz_, voxel_size_,
+      "Point cloud WebSocket server listening on ws://%s:%u, input_topic=%s, input_qos=%s, publish_rate_hz=%.3f, voxel_size=%.3f, accumulate_map=%s, map_voxel_size=%.3f, map_window_seconds=%.3f, enable_volume=%s",
+      address_.c_str(), port_, input_topic_.c_str(), input_qos_.c_str(), publish_rate_hz_, voxel_size_,
       accumulate_map_ ? "true" : "false", map_voxel_size_, map_window_seconds_,
       enable_volume_ ? "true" : "false");
   }
@@ -328,46 +336,50 @@ private:
     auto payload = std::make_shared<std::vector<uint8_t>>();
     payload->reserve(static_cast<std::size_t>(std::max<uint32_t>(1024, total_points / 4)) * 3 * sizeof(float));
 
-    for (uint32_t index = 0; index < total_points; ++index) {
-      const std::size_t start = static_cast<std::size_t>(index) * msg->point_step;
-      if (start + msg->point_step > msg->data.size()) {
-        break;
-      }
-
-      double x = 0.0;
-      double y = 0.0;
-      double z = 0.0;
-      if (!read_field_as_double(msg->data, start, *x_field, msg->is_bigendian, x) ||
-        !read_field_as_double(msg->data, start, *y_field, msg->is_bigendian, y) ||
-        !read_field_as_double(msg->data, start, *z_field, msg->is_bigendian, z) ||
-        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
-      {
-        continue;
-      }
-
-      const VoxelKey key{
-        static_cast<int32_t>(std::floor(x / voxel_size_)),
-        static_cast<int32_t>(std::floor(y / voxel_size_)),
-        static_cast<int32_t>(std::floor(z / voxel_size_))};
-      if (!seen_voxels.insert(key).second) {
-        continue;
-      }
-
-      const PointXYZ point{
-        static_cast<float>(x),
-        static_cast<float>(y),
-        static_cast<float>(z)};
-      if (accumulate_map_) {
-        const VoxelKey map_key{
-          static_cast<int32_t>(std::floor(x / map_voxel_size_)),
-          static_cast<int32_t>(std::floor(y / map_voxel_size_)),
-          static_cast<int32_t>(std::floor(z / map_voxel_size_))};
-        auto [entry, inserted] = map_points_.try_emplace(map_key, MapPoint{point, now});
-        if (!inserted) {
-          entry->second.last_seen = now;
+    for (uint32_t row = 0; row < msg->height; ++row) {
+      const std::size_t row_start = static_cast<std::size_t>(row) * msg->row_step;
+      for (uint32_t col = 0; col < msg->width; ++col) {
+        const std::size_t start = row_start + static_cast<std::size_t>(col) * msg->point_step;
+        if (start + msg->point_step > msg->data.size()) {
+          break;
         }
-      } else {
-        append_point(*payload, point);
+
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        if (!read_field_as_double(msg->data, start, *x_field, msg->is_bigendian, x) ||
+          !read_field_as_double(msg->data, start, *y_field, msg->is_bigendian, y) ||
+          !read_field_as_double(msg->data, start, *z_field, msg->is_bigendian, z) ||
+          !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+        {
+          continue;
+        }
+
+        const VoxelKey key{
+          static_cast<int32_t>(std::floor(x / voxel_size_)),
+          static_cast<int32_t>(std::floor(y / voxel_size_)),
+          static_cast<int32_t>(std::floor(z / voxel_size_))};
+        if (!seen_voxels.insert(key).second) {
+          continue;
+        }
+
+        const PointXYZ point{
+          static_cast<float>(x),
+          static_cast<float>(y),
+          static_cast<float>(z)};
+        if (accumulate_map_) {
+          const VoxelKey map_key{
+            static_cast<int32_t>(std::floor(x / map_voxel_size_)),
+            static_cast<int32_t>(std::floor(y / map_voxel_size_)),
+            static_cast<int32_t>(std::floor(z / map_voxel_size_))};
+          auto [entry, inserted] = map_points_.try_emplace(map_key, MapPoint{point, now});
+          if (!inserted) {
+            entry->second.point = point;
+            entry->second.last_seen = now;
+          }
+        } else {
+          append_point(*payload, point);
+        }
       }
     }
 
@@ -376,6 +388,8 @@ private:
       maybe_update_volume(now);
       payload = build_map_payload();
     }
+    const auto payload_points = payload ? payload->size() / (3 * sizeof(float)) : 0U;
+    const auto map_points = map_points_.size();
 
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
@@ -388,6 +402,10 @@ private:
     }
     frame_cv_.notify_all();
     last_publish_time_ = now;
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Received %u points from %s; web payload points=%zu; accumulated map points=%zu.",
+      total_points, input_topic_.c_str(), payload_points, map_points);
   }
 
   void run_server()
@@ -596,7 +614,10 @@ private:
     return true;
   }
 
-  bool read_pending_client_messages(websocket::stream<tcp::socket> & ws, bool & stream_enabled)
+  bool read_pending_client_messages(
+    websocket::stream<tcp::socket> & ws,
+    bool & stream_enabled,
+    bool & stream_state_changed)
   {
     boost::system::error_code ec;
     const auto available = ws.next_layer().available(ec);
@@ -612,6 +633,7 @@ private:
     if (ws.got_text()) {
       const auto message = boost::beast::buffers_to_string(buffer.data());
       if (const auto enabled = stream_command_enabled(message)) {
+        stream_state_changed = stream_enabled != *enabled;
         stream_enabled = *enabled;
         RCLCPP_INFO(
           get_logger(), "WebSocket client %s point-cloud stream.",
@@ -637,6 +659,7 @@ private:
         std::shared_ptr<const std::vector<uint8_t>> payload;
         std::string volume_json;
         bool has_new_frame = false;
+        bool stream_state_changed = false;
         {
           std::unique_lock<std::mutex> lock(frame_mutex_);
           has_new_frame = frame_cv_.wait_for(lock, std::chrono::milliseconds(20), [this, last_sequence]() {
@@ -652,8 +675,18 @@ private:
           }
         }
 
-        if (!read_pending_client_messages(ws, stream_enabled)) {
+        if (!read_pending_client_messages(ws, stream_enabled, stream_state_changed)) {
           return;
+        }
+
+        if (stream_enabled && stream_state_changed) {
+          std::lock_guard<std::mutex> lock(frame_mutex_);
+          payload = latest_payload_;
+          volume_json = latest_volume_json_;
+          has_new_frame = static_cast<bool>(payload && !payload->empty());
+          RCLCPP_INFO(
+            get_logger(), "WebSocket stream enabled; latest payload has %zu bytes.",
+            payload ? payload->size() : 0U);
         }
 
         if (!has_new_frame) {
@@ -675,6 +708,7 @@ private:
   }
 
   std::string input_topic_;
+  std::string input_qos_;
   std::string address_;
   uint16_t port_ = 8766;
   double publish_rate_hz_ = 5.0;
