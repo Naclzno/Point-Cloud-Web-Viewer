@@ -1,0 +1,28 @@
+rosbag2_bagfile_information:
+  compression_format: ''
+  compression_mode: ''
+  custom_data: null
+  duration:
+    nanoseconds: 60965900000
+  files:
+  - duration:
+      nanoseconds: 60965900000
+    message_count: 589
+    path: kitti_00_sample_ros2.db3
+    starting_time:
+      nanoseconds_since_epoch: 100000
+  message_count: 589
+  relative_file_paths:
+  - kitti_00_sample_ros2.db3
+  ros_distro: rosbags
+  starting_time:
+    nanoseconds_since_epoch: 100000
+  storage_identifier: sqlite3
+  topics_with_message_count:
+  - message_count: 589
+    topic_metadata:
+      name: /kitti/velo/pointcloud
+      offered_qos_profiles: ""
+      serialization_format: cdr
+      type: sensor_msgs/msg/PointCloud2
+  version: 8

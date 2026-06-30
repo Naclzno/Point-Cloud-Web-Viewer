@@ -26,6 +26,7 @@ def generate_launch_description():
     ground_plane_b = LaunchConfiguration("ground_plane_b")
     ground_plane_c = LaunchConfiguration("ground_plane_c")
     ground_plane_d = LaunchConfiguration("ground_plane_d")
+    patchwork_update_hz = LaunchConfiguration("patchwork_update_hz")
     ws_port = LaunchConfiguration("ws_port")
     ws_address = LaunchConfiguration("ws_address")
     record_bag = LaunchConfiguration("record_bag")
@@ -34,6 +35,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
 
     rslidar_share = get_package_share_directory("rslidar_sdk")
+    patchwork_params_file = get_package_share_directory("patchworkpp") + "/config/params.yaml"
     config_file = rslidar_share + "/config/config.yaml"
     rviz_config = rslidar_share + "/rviz/rviz2.rviz"
 
@@ -58,6 +60,7 @@ def generate_launch_description():
             DeclareLaunchArgument("ground_plane_b", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_c", default_value="1.0"),
             DeclareLaunchArgument("ground_plane_d", default_value="0.0"),
+            DeclareLaunchArgument("patchwork_update_hz", default_value="2.0"),
             DeclareLaunchArgument("ws_port", default_value="8766"),
             DeclareLaunchArgument("ws_address", default_value="0.0.0.0"),
             DeclareLaunchArgument("record_bag", default_value="false"),
@@ -78,6 +81,7 @@ def generate_launch_description():
                 name="rslidar_pointcloud_ws_server",
                 output="screen",
                 parameters=[
+                    patchwork_params_file,
                     {
                         "input_topic": input_topic,
                         "input_qos": input_qos,
@@ -99,6 +103,9 @@ def generate_launch_description():
                         "ground_plane_b": ParameterValue(ground_plane_b, value_type=float),
                         "ground_plane_c": ParameterValue(ground_plane_c, value_type=float),
                         "ground_plane_d": ParameterValue(ground_plane_d, value_type=float),
+                        "patchwork_update_hz": ParameterValue(
+                            patchwork_update_hz, value_type=float
+                        ),
                         "port": ParameterValue(ws_port, value_type=int),
                         "address": ws_address,
                     }

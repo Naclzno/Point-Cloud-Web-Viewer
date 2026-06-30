@@ -6,9 +6,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system)
+find_package(Boost REQUIRED COMPONENTS filesystem system)
+find_package(OpenCV REQUIRED)
+find_package(PCL REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(patchworkpp REQUIRED)
 
 add_executable(pointcloud_downsampler
   src/pointcloud_downsampler.cpp
@@ -27,13 +33,22 @@ ament_target_dependencies(pointcloud_downsampler
 target_compile_features(pointcloud_ws_server PUBLIC cxx_std_17)
 target_include_directories(pointcloud_ws_server PRIVATE
   ${Boost_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 ament_target_dependencies(pointcloud_ws_server
   rclcpp
   sensor_msgs
+  geometry_msgs
+  visualization_msgs
+  pcl_conversions
+  patchworkpp
 )
 target_link_libraries(pointcloud_ws_server
   Boost::system
+  Boost::filesystem
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
 install(TARGETS

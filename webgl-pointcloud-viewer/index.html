@@ -108,6 +108,18 @@
         width: 130px;
       }
 
+      input[type="number"] {
+        width: 66px;
+        height: 26px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 5px;
+        background: rgba(15, 23, 42, 0.9);
+        color: #f8fafc;
+        font: inherit;
+        font-size: 12px;
+        padding: 0 5px;
+      }
+
       button {
         height: 28px;
         border: 1px solid rgba(255, 255, 255, 0.18);
@@ -122,6 +134,11 @@
       button.active {
         border-color: #38bdf8;
         color: #e0f2fe;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
       }
 
       input[type="file"] {
@@ -139,7 +156,35 @@
       }
 
       .hidden {
-        display: none;
+        display: none !important;
+      }
+
+      .cluster-control {
+        position: relative;
+        display: inline-flex;
+      }
+
+      .cluster-menu {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 50%;
+        transform: translateX(-50%);
+        min-width: 104px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 6px;
+        background: rgba(15, 23, 42, 0.96);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+        z-index: 3;
+      }
+
+      .cluster-menu button {
+        width: 100%;
+        text-align: center;
+        padding: 0 6px;
       }
 
       .metrics {
@@ -184,6 +229,42 @@
       .operation-status {
         color: #e7edf3;
       }
+
+      .segmentation-legend {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+
+      .legend-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+
+      .legend-swatch.ground {
+        background: rgb(51, 148, 255);
+      }
+
+      .legend-swatch.nonground {
+        background: rgb(242, 184, 56);
+      }
+
+      .legend-swatch.autopile {
+        background: rgb(239, 68, 68);
+      }
+
+      .legend-swatch.debug-stage {
+        background: rgb(34, 197, 94);
+      }
     </style>
   </head>
   <body>
@@ -209,10 +290,19 @@
         <button id="liveStream" type="button">Live</button>
         <button id="loadLas" type="button">Load LAS</button>
         <input id="lasFile" type="file" accept=".las,.LAS" />
+        <button id="flipCloud" type="button">Flip</button>
         <button id="filterStructure" type="button">Filter structure</button>
         <button id="fitGround" type="button">Fit ground</button>
         <button id="selectRoi" type="button">ROI</button>
-        <button id="autoPile" type="button">Auto pile</button>
+        <button id="selectExclude" type="button">Exclude</button>
+        <div class="cluster-control">
+          <button id="clusterButton" type="button">Cluster</button>
+          <div id="clusterMenu" class="cluster-menu hidden">
+            <button type="button" data-object-type="stockpile">Stockpile</button>
+            <button type="button" data-object-type="box">Box object</button>
+          </div>
+        </div>
+        <button id="debugCluster" type="button">Debug</button>
         <button id="calculateVolume" type="button">Calculate</button>
         <button id="clearViewer" type="button">Clear</button>
         <button id="undoRoi" type="button">Undo</button>
@@ -220,6 +310,12 @@
     </div>
     <div class="bottom-stack">
       <div id="operationStatus" class="operation-status">Ready</div>
+      <div id="segmentationLegend" class="calibration segmentation-legend hidden">
+        <span id="groundLegendItem" class="legend-item"><span class="legend-swatch ground"></span>Ground points</span>
+        <span id="nongroundLegendItem" class="legend-item"><span class="legend-swatch nonground"></span>Non-ground points</span>
+        <span id="clusterLegendItem" class="legend-item"><span class="legend-swatch autopile"></span>Cluster selection</span>
+        <span id="debugLegendItem" class="legend-item"><span class="legend-swatch debug-stage"></span>Debug stage</span>
+      </div>
       <div id="calibration" class="calibration">Ground: z=0 · ROI: none</div>
     </div>
 
@@ -232,17 +328,26 @@
       const metrics = document.getElementById("metrics");
       const volumeDisplay = document.getElementById("volume");
       const fitGroundButton = document.getElementById("fitGround");
-      const autoPileButton = document.getElementById("autoPile");
+      const clusterButton = document.getElementById("clusterButton");
+      const clusterMenu = document.getElementById("clusterMenu");
+      const debugClusterButton = document.getElementById("debugCluster");
       const selectRoiButton = document.getElementById("selectRoi");
+      const selectExcludeButton = document.getElementById("selectExclude");
       const calculateVolumeButton = document.getElementById("calculateVolume");
       const undoRoiButton = document.getElementById("undoRoi");
       const sourceSelect = document.getElementById("sourceSelect");
       const liveStreamButton = document.getElementById("liveStream");
       const clearViewerButton = document.getElementById("clearViewer");
       const loadLasButton = document.getElementById("loadLas");
+      const flipCloudButton = document.getElementById("flipCloud");
       const filterStructureButton = document.getElementById("filterStructure");
       const lasFileInput = document.getElementById("lasFile");
       const operationStatus = document.getElementById("operationStatus");
+      const segmentationLegend = document.getElementById("segmentationLegend");
+      const groundLegendItem = document.getElementById("groundLegendItem");
+      const nongroundLegendItem = document.getElementById("nongroundLegendItem");
+      const clusterLegendItem = document.getElementById("clusterLegendItem");
+      const debugLegendItem = document.getElementById("debugLegendItem");
       const calibrationDisplay = document.getElementById("calibration");
       const gl = canvas.getContext("webgl", { antialias: false, alpha: false });
 
@@ -254,26 +359,46 @@
 
       const vertexShaderSource = `
         attribute vec3 aPosition;
+        attribute float aLabel;
         uniform mat4 uMatrix;
         uniform float uPointSize;
         varying float vDepth;
+        varying float vLabel;
 
         void main() {
           vec4 world = vec4(aPosition, 1.0);
           gl_Position = uMatrix * world;
           gl_PointSize = uPointSize;
           vDepth = clamp((aPosition.z + 3.0) / 6.0, 0.0, 1.0);
+          vLabel = aLabel;
         }
       `;
 
       const fragmentShaderSource = `
         precision mediump float;
         varying float vDepth;
+        varying float vLabel;
 
         void main() {
           vec2 p = gl_PointCoord * 2.0 - 1.0;
           if (dot(p, p) > 1.0) {
             discard;
+          }
+          if (vLabel > 0.5) {
+            if (vLabel > 2.5) {
+              gl_FragColor = vec4(0.13, 0.77, 0.37, 1.0);
+              return;
+            }
+            if (vLabel > 1.5) {
+              gl_FragColor = vec4(0.94, 0.27, 0.27, 1.0);
+              return;
+            }
+            gl_FragColor = vec4(0.95, 0.72, 0.22, 1.0);
+            return;
+          }
+          if (vLabel >= 0.0) {
+            gl_FragColor = vec4(0.20, 0.58, 1.0, 1.0);
+            return;
           }
           vec3 nearColor = vec3(0.27, 0.77, 1.0);
           vec3 farColor = vec3(0.97, 0.86, 0.45);
@@ -304,9 +429,11 @@
 
       const program = createProgram();
       const positionLocation = gl.getAttribLocation(program, "aPosition");
+      const labelLocation = gl.getAttribLocation(program, "aLabel");
       const matrixLocation = gl.getUniformLocation(program, "uMatrix");
       const pointSizeLocation = gl.getUniformLocation(program, "uPointSize");
       const positionBuffer = gl.createBuffer();
+      const labelBuffer = gl.createBuffer();
 
       let pointCount = 0;
       let yaw = 0;
@@ -323,12 +450,27 @@
       let fps = 0;
       let latestPoints = new Float32Array();
       let displayedPoints = new Float32Array();
+      let displayedLabels = new Float32Array();
+      let segmentationDisplayPoints = new Float32Array();
+      let segmentationDisplayLabels = new Float32Array();
+      let patchworkSegmentationActive = false;
+      let patchworkRealtimeActive = false;
+      let pendingPatchworkBinary = false;
+      let flipPointCloud = false;
       let roi = null;
       let rois = [];
+      let excludeCellMasks = [];
       let pileMask = null;
+      let stockpileDebugActive = false;
+      let stockpileDebugStageIndex = 0;
       let roiSelectionActive = false;
+      let roiSelectionMode = "include";
       let roiFirstCorner = null;
       let roiDraftPoints = [];
+      let excludeDraftScreenPoints = [];
+      let excludeDraftClosed = false;
+      let excludeScreenPolygons = [];
+      const roiRequiredClicks = 3;
       let roiStatusText = "ROI: none";
       let groundPlane = { a: 0, b: 0, c: 1, d: 0 };
       let groundFitted = false;
@@ -339,9 +481,11 @@
       let sourceTotalPointCount = 0;
       let staticOriginalPointCount = 0;
       let staticRawPoints = new Float32Array();
+      let staticProcessedPoints = new Float32Array();
       let staticStructureFiltered = false;
       let latestLivePoints = new Float32Array();
       let latestLiveRawPoints = new Float32Array();
+      let latestLiveProcessedPoints = new Float32Array();
       let liveWindowPoints = new Float32Array();
       let liveWindowFrames = [];
       let liveReceiveActive = false;
@@ -350,6 +494,7 @@
       let liveReceiveEpoch = 0;
       let receivedLiveFrameCount = 0;
       let lastLiveReceiveStatusTime = 0;
+      let socketOpenWaiters = [];
       const undoStack = [];
       const maxUndoSteps = 20;
       const maxRenderedPoints = 1200000;
@@ -363,12 +508,12 @@
       );
       const staticVolumeGridSize = 0.1;
       const staticVolumeMinHeight = 0.05;
-      const autoPileGridSize = 0.3;
-      const autoPileMinHeight = 0.25;
+      const autoPileGridSize = 0.15;
+      const autoPileMinHeight = staticVolumeMinHeight;
       const autoPileMaxHeight = 12.0;
-      const autoPileMinCellPoints = 3;
-      const autoPileMinComponentCells = 10;
-      const autoPileMinComponentPeakHeight = 0.5;
+      const autoPileMinCellPoints = 1;
+      const autoPileMinComponentCells = 1;
+      const autoPileMinComponentPeakHeight = staticVolumeMinHeight;
       const autoPileNeighborRadius = 1;
       const surfaceHeightQuantile = 0.68;
       const maxSurfaceStep = 0.8;
@@ -376,14 +521,36 @@
       const conveyorHeightJump = 0.7;
       const conveyorMaxNeighbors = 4;
       const conveyorMaxSupportPairs = 1;
-      const sideSurfaceFitRadius = 3;
-      const sideSurfaceFitMinNeighbors = 8;
-      const sideSurfaceFitLowerFraction = 0.7;
-      const sideSurfaceOutlierHeight = 0.45;
+      const stockpilePlaneResidual = 0.22;
+      const stockpilePlaneFitRadius = 4;
+      const stockpileMaxPlanePatches = 7;
+      const stockpileSurfaceCompletionPasses = 3;
+      const stockpileFootprintMinNeighborCells = 3;
+      const stockpileBoundaryDrop = 0.22;
+      const stockpileProtrusionRadius = 3;
+      const stockpileProtrusionHeight = 0.18;
+      const stockpileProtrusionMinCells = 3;
+      const stockpileProtrusionMaxCells = 450;
+      const stockpileProtrusionMinAspectRatio = 2.0;
+      const staticPatchworkVoxelSize = Math.max(
+        0,
+        Number(urlParams.get("static_patchwork_voxel_size") || "0.03") || 0,
+      );
 
       function setOperationStatus(message, isError = false) {
         operationStatus.textContent = message;
         operationStatus.style.color = isError ? "#fecaca" : "#e7edf3";
+      }
+
+      function updateSegmentationLegend() {
+        const showPatchworkLegend = patchworkSegmentationActive && segmentationDisplayPoints.length > 0;
+        const showClusterLegend = Boolean(pileMask);
+        const showDebugLegend = stockpileDebugActive && pileMask && pileMask.debugStages && pileMask.debugStages.length > 0;
+        groundLegendItem.classList.toggle("hidden", !showPatchworkLegend);
+        nongroundLegendItem.classList.toggle("hidden", !showPatchworkLegend);
+        clusterLegendItem.classList.toggle("hidden", !showClusterLegend);
+        debugLegendItem.classList.toggle("hidden", !showDebugLegend);
+        segmentationLegend.classList.toggle("hidden", !(showPatchworkLegend || showClusterLegend || showDebugLegend));
       }
 
       function normalizeWebSocketUrl(value) {
@@ -443,13 +610,6 @@
         return pointCloudSources[selectedSourceIndex] || pointCloudSources[0];
       }
 
-      function receivingStatusText(sourceName) {
-        if (/point\s*cloud/i.test(sourceName)) {
-          return `Receiving ${sourceName}`;
-        }
-        return `Receiving ${sourceName} point cloud`;
-      }
-
       function setupSourceSelect() {
         sourceSelect.replaceChildren();
         pointCloudSources.forEach((source, index) => {
@@ -472,46 +632,147 @@
         liveStreamButton.classList.toggle("active", liveReceiveActive);
       }
 
-      function clearProcessingSelection() {
+      function clearProcessingSelection(options = {}) {
+        const preserveGround = Boolean(options.preserveGround);
         roi = null;
         rois = [];
+        excludeCellMasks = [];
         pileMask = null;
+        stockpileDebugActive = false;
+        stockpileDebugStageIndex = 0;
         roiFirstCorner = null;
         roiDraftPoints = [];
+        excludeDraftScreenPoints = [];
+        excludeDraftClosed = false;
+        excludeScreenPolygons = [];
         roiSelectionActive = false;
+        roiSelectionMode = "include";
         volumeCalculationActive = false;
         showFilteredRegion = false;
-        groundPlane = { a: 0, b: 0, c: 1, d: 0 };
-        groundFitted = false;
+        if (!preserveGround) {
+          groundPlane = { a: 0, b: 0, c: 1, d: 0 };
+          groundFitted = false;
+        }
         selectRoiButton.classList.remove("active");
+        selectExcludeButton.classList.remove("active");
         calculateVolumeButton.classList.remove("active");
         volumeDisplay.textContent = "Volume: -- m³";
+        updateCalculateButtonState();
+        updateDebugClusterButton();
+      }
+
+      function orientPointCloud(points) {
+        if (!flipPointCloud || points.length === 0) {
+          return points;
+        }
+        const output = new Float32Array(points.length);
+        for (let i = 0; i < points.length; i += 3) {
+          output[i] = points[i];
+          output[i + 1] = -points[i + 1];
+          output[i + 2] = -points[i + 2];
+        }
+        return output;
+      }
+
+      function updateFlipButton() {
+        flipCloudButton.classList.toggle("active", flipPointCloud);
+        flipCloudButton.textContent = flipPointCloud ? "Flip on" : "Flip";
+      }
+
+      function updateFitGroundButton() {
+        fitGroundButton.classList.toggle("active", patchworkRealtimeActive);
+        fitGroundButton.textContent = patchworkRealtimeActive ? "Fit on" : "Fit ground";
+        updateSegmentationLegend();
+      }
+
+      function updateCalculateButtonState() {
+        calculateVolumeButton.disabled = !pileMask;
+      }
+
+      function updateDebugClusterButton() {
+        const stages = pileMask && pileMask.debugStages ? pileMask.debugStages : [];
+        debugClusterButton.disabled = stages.length === 0;
+        debugClusterButton.classList.toggle("active", stockpileDebugActive && stages.length > 0);
+        if (!stockpileDebugActive || stages.length === 0) {
+          debugClusterButton.textContent = "Debug";
+          return;
+        }
+        const stage = stages[stockpileDebugStageIndex % stages.length];
+        debugClusterButton.textContent = `Debug: ${stage.name}`;
+      }
+
+      function setStaticSourcePoints(points) {
+        staticProcessedPoints = points;
+        patchworkSegmentationActive = false;
+        patchworkRealtimeActive = false;
+        segmentationDisplayPoints = new Float32Array();
+        segmentationDisplayLabels = new Float32Array();
+        latestPoints = orientPointCloud(staticProcessedPoints);
+      }
+
+      function setLiveSourcePoints(points) {
+        latestLiveProcessedPoints = points;
+        latestLivePoints = orientPointCloud(latestLiveProcessedPoints);
+        if (sourceMode === "live") {
+          latestPoints = latestLivePoints;
+        }
+      }
+
+      function reapplyPointCloudOrientation() {
+        if (sourceMode === "static") {
+          latestPoints = orientPointCloud(staticProcessedPoints.length > 0 ? staticProcessedPoints : staticRawPoints);
+        } else {
+          setLiveSourcePoints(
+            latestLiveProcessedPoints.length > 0
+              ? latestLiveProcessedPoints
+              : liveWindowPoints.length > 0
+                ? liveWindowPoints
+                : latestLiveRawPoints,
+          );
+        }
+        updateDisplayedPoints();
       }
 
       function resetPointCloudState() {
         latestPoints = new Float32Array();
         displayedPoints = new Float32Array();
         latestLivePoints = new Float32Array();
+        latestLiveProcessedPoints = new Float32Array();
         latestLiveRawPoints = new Float32Array();
         liveWindowPoints = new Float32Array();
         liveWindowFrames = [];
         staticRawPoints = new Float32Array();
+        staticProcessedPoints = new Float32Array();
+        patchworkSegmentationActive = false;
+        patchworkRealtimeActive = false;
+        segmentationDisplayPoints = new Float32Array();
+        segmentationDisplayLabels = new Float32Array();
+        pendingPatchworkBinary = false;
         staticOriginalPointCount = 0;
         staticStructureFiltered = false;
         sourceTotalPointCount = 0;
         updatePointBuffer(displayedPoints);
+        updateSegmentationLegend();
       }
 
       function resetLivePointCloudCache() {
         liveReceiveEpoch++;
         latestPoints = new Float32Array();
         displayedPoints = new Float32Array();
+        displayedLabels = new Float32Array();
         latestLivePoints = new Float32Array();
+        latestLiveProcessedPoints = new Float32Array();
         latestLiveRawPoints = new Float32Array();
         liveWindowPoints = new Float32Array();
         liveWindowFrames = [];
+        patchworkSegmentationActive = false;
+        patchworkRealtimeActive = false;
+        segmentationDisplayPoints = new Float32Array();
+        segmentationDisplayLabels = new Float32Array();
+        pendingPatchworkBinary = false;
         sourceTotalPointCount = 0;
         updatePointBuffer(displayedPoints);
+        updateSegmentationLegend();
       }
 
       function closeCurrentSocket() {
@@ -523,6 +784,7 @@
         currentSocket = null;
         try {
           if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "patchwork_stream", enabled: false, flip: flipPointCloud }));
             socket.send(JSON.stringify({ type: "stream", enabled: false }));
           }
         } catch {
@@ -540,9 +802,14 @@
       function stopLiveStreaming() {
         liveReceiveEpoch++;
         liveReceiveActive = false;
+        patchworkRealtimeActive = false;
+        patchworkSegmentationActive = false;
         receivedLiveFrameCount = 0;
         lastLiveReceiveStatusTime = 0;
+        sendPatchworkControl(false);
         sendStreamControl(false);
+        updateFitGroundButton();
+        updateSegmentationLegend();
       }
 
       function clearViewerState() {
@@ -553,6 +820,7 @@
         lastLiveReceiveStatusTime = 0;
         closeCurrentSocket();
         sourceMode = "live";
+        flipPointCloud = false;
         clearProcessingSelection();
         resetPointCloudState();
         roiStatusText = "ROI: none";
@@ -560,6 +828,7 @@
         statusText.textContent = "Live idle";
         metrics.textContent = "0 points";
         updateLiveButton();
+        updateFlipButton();
         updateCalibrationDisplay();
         sendCalibrationToServer(false);
         setOperationStatus("Cleared point cloud and processing state; live receive stopped");
@@ -579,6 +848,7 @@
         lastLiveReceiveStatusTime = 0;
         closeCurrentSocket();
         sourceMode = "live";
+        flipPointCloud = false;
         clearProcessingSelection();
         resetPointCloudState();
         roiStatusText = `Source: ${currentPointCloudSource().name}`;
@@ -586,6 +856,7 @@
         statusText.textContent = "Live idle";
         metrics.textContent = "0 points";
         updateLiveButton();
+        updateFlipButton();
         updateCalibrationDisplay();
         setOperationStatus(`Selected source: ${currentPointCloudSource().name}`);
       }
@@ -665,15 +936,31 @@
               cells: new Set(value.cells),
               gridSize: value.gridSize,
               minHeight: value.minHeight,
+              objectType: value.objectType,
               searchRoi: cloneRoi(value.searchRoi),
               searchRois: value.searchRois ? cloneRois(value.searchRois) : [],
+              debugStages: value.debugStages
+                ? value.debugStages.map((stage) => ({ name: stage.name, cells: new Set(stage.cells) }))
+                : [],
               components: value.components
                 ? value.components.map((component) => ({
                     keys: new Set(component.keys),
+                    heightCells: component.heightCells ? new Map(component.heightCells) : null,
                     searchRoi: cloneRoi(component.searchRoi),
                     peakHeight: component.peakHeight,
                   }))
                 : [],
+            }
+          : null;
+      }
+
+      function summarizeStockpileGeometry(value) {
+        return value
+          ? {
+              planeCount: value.planeCount,
+              coverage: value.coverage,
+              meanResidual: value.meanResidual,
+              explainedCells: value.explainedCells,
             }
           : null;
       }
@@ -683,10 +970,17 @@
           label,
           roi: cloneRoi(roi),
           rois: cloneRois(rois),
+          excludeCellMasks: excludeCellMasks.map((mask) => new Set(mask)),
           pileMask: clonePileMask(pileMask),
+          stockpileDebugActive,
+          stockpileDebugStageIndex,
           roiSelectionActive,
+          roiSelectionMode,
           roiFirstCorner: roiFirstCorner ? { ...roiFirstCorner } : null,
           roiDraftPoints: roiDraftPoints.map((point) => ({ ...point })),
+          excludeDraftScreenPoints: excludeDraftScreenPoints.map((point) => ({ ...point })),
+          excludeDraftClosed,
+          excludeScreenPolygons: excludeScreenPolygons.map((polygon) => polygon.map((point) => ({ ...point }))),
           roiStatusText,
           groundPlane: { ...groundPlane },
           groundFitted,
@@ -697,9 +991,15 @@
           sourceTotalPointCount,
           staticOriginalPointCount,
           staticRawPoints,
+          staticProcessedPoints,
           staticStructureFiltered,
           latestPoints,
+          patchworkSegmentationActive,
+          patchworkRealtimeActive,
+          segmentationDisplayPoints,
+          segmentationDisplayLabels,
           latestLivePoints,
+          latestLiveProcessedPoints,
           latestLiveRawPoints,
           liveWindowPoints,
           liveWindowFrames: liveWindowFrames.map((frame) => ({ time: frame.time, points: frame.points })),
@@ -707,6 +1007,7 @@
           liveStructureFilterActive,
           liveSessionId,
           liveReceiveEpoch,
+          flipPointCloud,
           statusClassName: statusDot.className,
           statusText: statusText.textContent,
           metricsText: metrics.textContent,
@@ -723,10 +1024,21 @@
       function restoreUndoState(state) {
         roi = cloneRoi(state.roi);
         rois = state.rois ? cloneRois(state.rois) : roi ? [cloneRoi(roi)] : [];
+        excludeCellMasks = state.excludeCellMasks ? state.excludeCellMasks.map((mask) => new Set(mask)) : [];
         pileMask = clonePileMask(state.pileMask);
+        stockpileDebugActive = Boolean(state.stockpileDebugActive);
+        stockpileDebugStageIndex = state.stockpileDebugStageIndex || 0;
         roiSelectionActive = state.roiSelectionActive;
+        roiSelectionMode = state.roiSelectionMode || "include";
         roiFirstCorner = state.roiFirstCorner ? { ...state.roiFirstCorner } : null;
         roiDraftPoints = state.roiDraftPoints ? state.roiDraftPoints.map((point) => ({ ...point })) : [];
+        excludeDraftScreenPoints = state.excludeDraftScreenPoints
+          ? state.excludeDraftScreenPoints.map((point) => ({ ...point }))
+          : [];
+        excludeDraftClosed = Boolean(state.excludeDraftClosed);
+        excludeScreenPolygons = state.excludeScreenPolygons
+          ? state.excludeScreenPolygons.map((polygon) => polygon.map((point) => ({ ...point })))
+          : [];
         roiStatusText = state.roiStatusText;
         groundPlane = { ...state.groundPlane };
         groundFitted = state.groundFitted;
@@ -736,9 +1048,15 @@
         sourceTotalPointCount = state.sourceTotalPointCount;
         staticOriginalPointCount = state.staticOriginalPointCount;
         staticRawPoints = state.staticRawPoints;
+        staticProcessedPoints = state.staticProcessedPoints || new Float32Array();
         staticStructureFiltered = state.staticStructureFiltered;
         latestPoints = state.latestPoints;
+        patchworkSegmentationActive = Boolean(state.patchworkSegmentationActive);
+        patchworkRealtimeActive = Boolean(state.patchworkRealtimeActive);
+        segmentationDisplayPoints = state.segmentationDisplayPoints || new Float32Array();
+        segmentationDisplayLabels = state.segmentationDisplayLabels || new Float32Array();
         latestLivePoints = state.latestLivePoints;
+        latestLiveProcessedPoints = state.latestLiveProcessedPoints || new Float32Array();
         latestLiveRawPoints = state.latestLiveRawPoints;
         liveWindowPoints = state.liveWindowPoints || new Float32Array();
         liveWindowFrames = state.liveWindowFrames
@@ -748,12 +1066,18 @@
         liveStructureFilterActive = Boolean(state.liveStructureFilterActive);
         liveSessionId = state.liveSessionId || 0;
         liveReceiveEpoch = state.liveReceiveEpoch || 0;
+        flipPointCloud = Boolean(state.flipPointCloud);
         volumeDisplay.textContent = state.volumeText;
         statusDot.className = state.statusClassName;
         statusText.textContent = state.statusText;
-        selectRoiButton.classList.toggle("active", roiSelectionActive);
+        selectExcludeButton.classList.toggle("active", roiSelectionActive && roiSelectionMode === "exclude");
+        selectRoiButton.classList.toggle("active", roiSelectionActive && roiSelectionMode === "include");
         calculateVolumeButton.classList.toggle("active", volumeCalculationActive);
         updateLiveButton();
+        updateFlipButton();
+        updateFitGroundButton();
+        updateCalculateButtonState();
+        updateDebugClusterButton();
         updateCalibrationDisplay();
         updateDisplayedPoints();
         if (state.metricsText) {
@@ -893,15 +1217,40 @@
         const roiText = roiSummary
           ? `ROI ${roiSummary.count} area${roiSummary.count > 1 ? "s" : ""} x=[${roiSummary.minX.toFixed(2)}, ${roiSummary.maxX.toFixed(2)}] y=[${roiSummary.minY.toFixed(2)}, ${roiSummary.maxY.toFixed(2)}]`
           : "ROI: none";
-        calibrationDisplay.textContent = `${groundText} · ${roiText} · ${roiStatusText}`;
+        const excludeText = excludeCellMasks.length > 0
+          ? `Exclude ${excludeCellMasks.length} mask${excludeCellMasks.length > 1 ? "s" : ""}`
+          : "Exclude: none";
+        calibrationDisplay.textContent = `${groundText} · ${roiText} · ${excludeText} · ${roiStatusText}`;
       }
 
       function formatPoint(point) {
         return `x=${point.x.toFixed(3)}, y=${point.y.toFixed(3)}`;
       }
 
-      function groundZAt(x, y) {
-        return Math.abs(groundPlane.c) > 1e-6 ? -(groundPlane.a * x + groundPlane.b * y + groundPlane.d) / groundPlane.c : 0;
+      function pointCloudMeanZ() {
+        const source = displayedPoints.length > 0 ? displayedPoints : latestPoints;
+        const total = Math.floor(source.length / 3);
+        if (total === 0) {
+          return 0;
+        }
+        const sampleTarget = 120000;
+        const stride = Math.max(1, Math.floor(total / sampleTarget));
+        let sum = 0;
+        let count = 0;
+        for (let index = 0; index < total; index += stride) {
+          const z = source[index * 3 + 2];
+          if (Number.isFinite(z)) {
+            sum += z;
+            count++;
+          }
+        }
+        return count > 0 ? sum / count : 0;
+      }
+
+      function roiBaseZAt(x, y) {
+        void x;
+        void y;
+        return pointCloudMeanZ();
       }
 
       function sendCalibrationToServer(enableVolume = volumeCalculationActive) {
@@ -935,6 +1284,13 @@
         currentSocket.send(JSON.stringify({ type: "stream", enabled }));
       }
 
+      function sendPatchworkControl(enabled = patchworkRealtimeActive) {
+        if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        currentSocket.send(JSON.stringify({ type: "patchwork_stream", enabled, flip: flipPointCloud }));
+      }
+
       function pointInRoiShape(region, x, y) {
         if (!region) {
           return true;
@@ -961,6 +1317,65 @@
         return inside;
       }
 
+      function pointInScreenPolygon(points, x, y) {
+        if (points.length < 3) {
+          return false;
+        }
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+          const pi = points[i];
+          const pj = points[j];
+          const intersects =
+            pi.y > y !== pj.y > y &&
+            x < ((pj.x - pi.x) * (y - pi.y)) / ((pj.y - pi.y) || 1e-9) + pi.x;
+          if (intersects) {
+            inside = !inside;
+          }
+        }
+        return inside;
+      }
+
+      function buildScreenExcludeMask(screenPoints) {
+        const matrix = viewMatrix();
+        const mask = new Set();
+        const source = displayedPoints.length > 0 ? displayedPoints : latestPoints;
+        const binSize = 8;
+        const nearestDepthByBin = new Map();
+        const candidates = [];
+        for (let i = 0; i < source.length; i += 3) {
+          const projected = projectPoint(matrix, source[i], source[i + 1], source[i + 2]);
+          if (!projected || !pointInScreenPolygon(screenPoints, projected.x, projected.y)) {
+            continue;
+          }
+          const binX = Math.floor(projected.x / binSize);
+          const binY = Math.floor(projected.y / binSize);
+          const binKey = `${binX},${binY}`;
+          const previousDepth = nearestDepthByBin.get(binKey);
+          if (previousDepth === undefined || projected.depth < previousDepth) {
+            nearestDepthByBin.set(binKey, projected.depth);
+          }
+          candidates.push({ index: i, projected, binX, binY });
+        }
+
+        const depthTolerance = Math.max(0.35, distance * 0.018);
+        for (const candidate of candidates) {
+          let nearestDepth = Number.POSITIVE_INFINITY;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              const depth = nearestDepthByBin.get(`${candidate.binX + dx},${candidate.binY + dy}`);
+              if (depth !== undefined) {
+                nearestDepth = Math.min(nearestDepth, depth);
+              }
+            }
+          }
+          if (!Number.isFinite(nearestDepth) || candidate.projected.depth > nearestDepth + depthTolerance) {
+            continue;
+          }
+          mask.add(excludeVoxelKey(source[candidate.index], source[candidate.index + 1], source[candidate.index + 2]));
+        }
+        return mask;
+      }
+
       function pointInRoi(x, y) {
         if (rois.length === 0) {
           return true;
@@ -968,11 +1383,38 @@
         return rois.some((region) => pointInRoiShape(region, x, y));
       }
 
+      function pointInExclude(x, y, z) {
+        if (!Number.isFinite(z)) {
+          return false;
+        }
+        const key = excludeVoxelKey(x, y, z);
+        return excludeCellMasks.some((mask) => mask.has(key));
+      }
+
+      function pointColumnInExclude(x, y) {
+        const prefix = `${Math.floor(x / autoPileGridSize)},${Math.floor(y / autoPileGridSize)},`;
+        for (const mask of excludeCellMasks) {
+          for (const key of mask) {
+            if (key.startsWith(prefix)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
       function pileCellKey(x, y) {
         return `${Math.floor(x / autoPileGridSize)},${Math.floor(y / autoPileGridSize)}`;
       }
 
-      function pointInActiveRegion(x, y) {
+      function excludeVoxelKey(x, y, z) {
+        return `${Math.floor(x / autoPileGridSize)},${Math.floor(y / autoPileGridSize)},${Math.floor(z / autoPileGridSize)}`;
+      }
+
+      function pointInActiveRegion(x, y, z = null) {
+        if (pointInExclude(x, y, z)) {
+          return false;
+        }
         if (pileMask) {
           const searchRois = pileMask.searchRois && pileMask.searchRois.length > 0
             ? pileMask.searchRois
@@ -987,10 +1429,47 @@
         return pointInRoi(x, y);
       }
 
-      function updatePointBuffer(points) {
+      function updatePointBuffer(points, labels = null) {
         pointCount = Math.floor(points.length / 3);
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, points, gl.DYNAMIC_DRAW);
+        const labelData = labels && labels.length === pointCount ? labels : new Float32Array(pointCount).fill(-1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, labelBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, labelData, gl.DYNAMIC_DRAW);
+      }
+
+      function buildDisplayLabels(points, baseLabels = null) {
+        const total = Math.floor(points.length / 3);
+        const labels =
+          baseLabels && baseLabels.length === total
+            ? new Float32Array(baseLabels)
+            : new Float32Array(total).fill(-1);
+        if (!pileMask) {
+          return labels;
+        }
+        const debugStages = pileMask.debugStages || [];
+        const debugStage =
+          stockpileDebugActive && debugStages.length > 0
+            ? debugStages[stockpileDebugStageIndex % debugStages.length]
+            : null;
+        for (let index = 0; index < total; index++) {
+          const offset = index * 3;
+          if (pointInExclude(points[offset], points[offset + 1], points[offset + 2])) {
+            continue;
+          }
+          const key = pileCellKey(points[offset], points[offset + 1]);
+          if (debugStage && debugStage.cells.has(key)) {
+            labels[index] = 3;
+            continue;
+          }
+          if (!pointInActiveRegion(points[offset], points[offset + 1], points[offset + 2])) {
+            continue;
+          }
+          if (!baseLabels || labels[index] > 0.5 || labels[index] < 0) {
+            labels[index] = 2;
+          }
+        }
+        return labels;
       }
 
       function makeDisplayPoints(points) {
@@ -999,7 +1478,11 @@
           return new Float32Array();
         }
 
-        const shouldFilterDisplay = showFilteredRegion && (rois.length > 0 || pileMask);
+        const debugStages = pileMask && pileMask.debugStages ? pileMask.debugStages : [];
+        const shouldFilterDisplay =
+          showFilteredRegion &&
+          !(stockpileDebugActive && debugStages.length > 0) &&
+          (rois.length > 0 || pileMask);
 
         if (!shouldFilterDisplay && total <= maxRenderedPoints) {
           return points;
@@ -1021,7 +1504,7 @@
 
         let kept = 0;
         for (let i = 0; i < points.length; i += 3) {
-          if (pointInActiveRegion(points[i], points[i + 1])) {
+          if (pointInActiveRegion(points[i], points[i + 1], points[i + 2])) {
             kept++;
           }
         }
@@ -1037,7 +1520,7 @@
         for (let i = 0; i < points.length; i += 3) {
           const x = points[i];
           const y = points[i + 1];
-          if (!pointInActiveRegion(x, y)) {
+          if (!pointInActiveRegion(x, y, points[i + 2])) {
             continue;
           }
           if (matched % stride === 0) {
@@ -1052,126 +1535,137 @@
 
       function updateDisplayedPoints() {
         sourceTotalPointCount = Math.floor(latestPoints.length / 3);
-        displayedPoints = makeDisplayPoints(latestPoints);
-        updatePointBuffer(displayedPoints);
+        if (patchworkSegmentationActive && segmentationDisplayPoints.length > 0) {
+          displayedPoints = segmentationDisplayPoints;
+          displayedLabels = buildDisplayLabels(displayedPoints, segmentationDisplayLabels);
+        } else {
+          displayedPoints = makeDisplayPoints(latestPoints);
+          displayedLabels = buildDisplayLabels(displayedPoints);
+        }
+        updatePointBuffer(displayedPoints, displayedLabels);
         computeBrowserVolume(false);
+        updateSegmentationLegend();
       }
 
-      function normalizePlane(plane) {
-        const length = Math.hypot(plane.a, plane.b, plane.c);
-        if (!Number.isFinite(length) || length < 1e-6) {
-          return null;
+      function staticPatchworkUploadPoints(points) {
+        if (staticPatchworkVoxelSize <= 0) {
+          return points;
         }
-        let normalized = {
-          a: plane.a / length,
-          b: plane.b / length,
-          c: plane.c / length,
-          d: plane.d / length,
-        };
-        if (normalized.c < 0) {
-          normalized = {
-            a: -normalized.a,
-            b: -normalized.b,
-            c: -normalized.c,
-            d: -normalized.d,
-          };
+        const selected = [];
+        const seen = new Set();
+        for (let i = 0; i < points.length; i += 3) {
+          const x = points[i];
+          const y = points[i + 1];
+          const z = points[i + 2];
+          const key =
+            `${Math.floor(x / staticPatchworkVoxelSize)},` +
+            `${Math.floor(y / staticPatchworkVoxelSize)},` +
+            `${Math.floor(z / staticPatchworkVoxelSize)}`;
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          selected.push(i);
         }
-        return normalized;
+
+        const output = new Float32Array(selected.length * 3);
+        let out = 0;
+        for (const offset of selected) {
+          output[out++] = points[offset];
+          output[out++] = points[offset + 1];
+          output[out++] = points[offset + 2];
+        }
+        return output;
       }
 
-      function planeFromPoints(p1, p2, p3) {
-        const ux = p2.x - p1.x;
-        const uy = p2.y - p1.y;
-        const uz = p2.z - p1.z;
-        const vx = p3.x - p1.x;
-        const vy = p3.y - p1.y;
-        const vz = p3.z - p1.z;
-        const plane = normalizePlane({
-          a: uy * vz - uz * vy,
-          b: uz * vx - ux * vz,
-          c: ux * vy - uy * vx,
-          d: 0,
+      function rejectSocketOpenWaiters(error) {
+        const waiters = socketOpenWaiters;
+        socketOpenWaiters = [];
+        waiters.forEach((waiter) => waiter.reject(error));
+      }
+
+      function resolveSocketOpenWaiters(socket) {
+        const waiters = socketOpenWaiters;
+        socketOpenWaiters = [];
+        waiters.forEach((waiter) => waiter.resolve(socket));
+      }
+
+      function ensurePatchworkSocketOpen() {
+        if (currentSocket && currentSocket.readyState === WebSocket.OPEN) {
+          return Promise.resolve(currentSocket);
+        }
+        if (!currentSocket || currentSocket.readyState === WebSocket.CLOSED || currentSocket.readyState === WebSocket.CLOSING) {
+          connect();
+        }
+        return new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            socketOpenWaiters = socketOpenWaiters.filter((waiter) => waiter.resolve !== resolve);
+            reject(new Error("WebSocket connection timed out"));
+          }, 8000);
+          socketOpenWaiters.push({
+            resolve: (socket) => {
+              window.clearTimeout(timeout);
+              resolve(socket);
+            },
+            reject: (error) => {
+              window.clearTimeout(timeout);
+              reject(error);
+            },
+          });
         });
-        if (!plane) {
-          return null;
-        }
-        plane.d = -(plane.a * p1.x + plane.b * p1.y + plane.c * p1.z);
-        return plane;
       }
 
-      function fitGroundPlane() {
-        const source = rois.length > 0 || roi ? displayedPoints : latestPoints;
-        const totalPoints = Math.floor(source.length / 3);
-        if (totalPoints < 30) {
-          setOperationStatus("Fit ground failed: not enough points", true);
+      async function fitStaticGroundPlane() {
+        const sourcePoints = orientPointCloud(staticProcessedPoints.length > 0 ? staticProcessedPoints : staticRawPoints);
+        if (sourcePoints.length === 0) {
+          setOperationStatus("Fit ground failed: load a LAS file first", true);
           return;
         }
 
-        const sampleCount = Math.min(3500, totalPoints);
-        const stride = Math.max(1, Math.floor(totalPoints / sampleCount));
-        const samples = [];
-        for (let i = 0; i < totalPoints && samples.length < sampleCount; i += stride) {
-          const offset = i * 3;
-          samples.push({ x: source[offset], y: source[offset + 1], z: source[offset + 2] });
-        }
-
-        let bestPlane = null;
-        let bestScore = -1;
-        const threshold = 0.08;
-        const iterations = 140;
-        for (let i = 0; i < iterations; i++) {
-          const p1 = samples[Math.floor(Math.random() * samples.length)];
-          const p2 = samples[Math.floor(Math.random() * samples.length)];
-          const p3 = samples[Math.floor(Math.random() * samples.length)];
-          const plane = planeFromPoints(p1, p2, p3);
-          if (!plane || plane.c < 0.72) {
-            continue;
-          }
-
-          let inliers = 0;
-          for (const point of samples) {
-            const distanceToPlane = Math.abs(
-              plane.a * point.x + plane.b * point.y + plane.c * point.z + plane.d,
-            );
-            if (distanceToPlane <= threshold) {
-              inliers++;
-            }
-          }
-
-          const score = inliers * (0.35 + 0.65 * plane.c);
-          if (score > bestScore) {
-            bestScore = score;
-            bestPlane = plane;
-          }
-        }
-
-        if (bestPlane) {
-          pushUndoState("Fit ground");
-          const offsets = [];
-          for (const point of samples) {
-            const distanceToPlane = Math.abs(
-              bestPlane.a * point.x + bestPlane.b * point.y + bestPlane.c * point.z + bestPlane.d,
-            );
-            if (distanceToPlane <= threshold) {
-              offsets.push(-(bestPlane.a * point.x + bestPlane.b * point.y + bestPlane.c * point.z));
-            }
-          }
-          if (offsets.length > 0) {
-            offsets.sort((a, b) => a - b);
-            bestPlane.d = offsets[Math.floor(offsets.length / 2)];
-          }
-          groundPlane = bestPlane;
-          groundFitted = true;
-          updateCalibrationDisplay();
-          sendCalibrationToServer();
-          computeBrowserVolume(true);
-          setOperationStatus(
-            `Fit ground succeeded: a=${groundPlane.a.toFixed(4)}, b=${groundPlane.b.toFixed(4)}, c=${groundPlane.c.toFixed(4)}, d=${groundPlane.d.toFixed(4)}`,
+        pushUndoState("Fit static ground");
+        const uploadPoints = staticPatchworkUploadPoints(sourcePoints);
+        patchworkRealtimeActive = false;
+        updateFitGroundButton();
+        pendingPatchworkBinary = true;
+        setOperationStatus(
+          `Uploading static point cloud to backend Patchwork++: ${(uploadPoints.length / 3).toLocaleString()} / ${(sourcePoints.length / 3).toLocaleString()} points, voxel=${staticPatchworkVoxelSize.toFixed(2)}m`,
+        );
+        try {
+          const socket = await ensurePatchworkSocketOpen();
+          socket.send(
+            JSON.stringify({
+              type: "patchwork_static_upload",
+              flip: false,
+              points: uploadPoints.length / 3,
+              original_points: sourcePoints.length / 3,
+            }),
           );
-        } else {
-          groundFitted = false;
-          setOperationStatus("Fit ground failed: no stable ground plane found", true);
+          socket.send(uploadPoints.buffer.slice(uploadPoints.byteOffset, uploadPoints.byteOffset + uploadPoints.byteLength));
+          setOperationStatus("Static point cloud uploaded; waiting for backend Patchwork++ result");
+        } catch (error) {
+          pendingPatchworkBinary = false;
+          setOperationStatus(`Fit ground failed: ${error.message}`, true);
         }
+      }
+
+      function fitGroundPlane() {
+        if (sourceMode === "static") {
+          fitStaticGroundPlane();
+          return;
+        }
+        if (sourceMode !== "live" || !currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+          setOperationStatus("Fit ground failed: live WebSocket is not connected", true);
+          return;
+        }
+        patchworkRealtimeActive = !patchworkRealtimeActive;
+        updateFitGroundButton();
+        pendingPatchworkBinary = false;
+        sendPatchworkControl(patchworkRealtimeActive);
+        setOperationStatus(
+          patchworkRealtimeActive
+            ? "Patchwork++ realtime ground segmentation enabled"
+            : "Patchwork++ realtime ground segmentation disabled",
+        );
       }
 
       function pointHeightAboveGround(x, y, z) {
@@ -1187,9 +1681,175 @@
         return sorted[index];
       }
 
+      function cloneHeightMapCell(cell) {
+        return {
+          count: cell.count,
+          heights: cell.heights,
+          surfaceHeight: cell.surfaceHeight,
+          maxHeight: cell.maxHeight,
+          gx: cell.gx,
+          gy: cell.gy,
+          synthetic: cell.synthetic,
+        };
+      }
+
       function parseGridKey(key) {
         const [gx, gy] = key.split(",").map(Number);
         return { gx, gy };
+      }
+
+      function buildObjectHeightMap(searchRegion, maxCellHeight) {
+        const cells = new Map();
+        for (let i = 0; i < latestPoints.length; i += 3) {
+          const x = latestPoints[i];
+          const y = latestPoints[i + 1];
+          if (searchRegion && !pointInRoiShape(searchRegion, x, y)) {
+            continue;
+          }
+          const z = latestPoints[i + 2];
+          const height = pointHeightAboveGround(x, y, z);
+          if (height <= 0 || height > maxCellHeight) {
+            continue;
+          }
+
+          const key = pileCellKey(x, y);
+          const cell = cells.get(key);
+          if (cell) {
+            cell.count++;
+            cell.heights.push(height);
+          } else {
+            cells.set(key, {
+              count: 1,
+              heights: [height],
+              gx: Math.floor(x / autoPileGridSize),
+              gy: Math.floor(y / autoPileGridSize),
+            });
+          }
+        }
+
+        for (const cell of cells.values()) {
+          cell.surfaceHeight = robustHeightFromValues(cell.heights);
+          cell.maxHeight = Math.max(...cell.heights);
+        }
+        return cells;
+      }
+
+      function stockpileCellsFromHeightMap(heightMap) {
+        function selectionHeight(cell) {
+          if (!cell) {
+            return 0;
+          }
+          const cappedMax = Math.min(cell.maxHeight || cell.surfaceHeight || 0, (cell.surfaceHeight || 0) + maxSurfaceStep * 0.32);
+          return Math.max(cell.surfaceHeight || 0, cappedMax);
+        }
+
+        const realHeights = [...heightMap.values()]
+          .filter((cell) => cell.count >= autoPileMinCellPoints && selectionHeight(cell) >= staticVolumeMinHeight * 0.65)
+          .map((cell) => selectionHeight(cell))
+          .sort((a, b) => a - b);
+        if (realHeights.length === 0) {
+          return new Map();
+        }
+
+        const peakHeight = realHeights[realHeights.length - 1];
+        const coreHeight = Math.max(autoPileMinHeight * 2.0, quantile(realHeights, 0.58));
+        const nearGroundHeight = Math.max(staticVolumeMinHeight * 1.6, Math.min(coreHeight * 0.42, peakHeight * 0.11));
+        const edgeFringeHeight = Math.max(staticVolumeMinHeight * 1.15, nearGroundHeight * 0.62);
+        const candidateCells = new Map();
+
+        for (const [key, cell] of heightMap) {
+          const cellHeight = selectionHeight(cell);
+          if (cell.count < autoPileMinCellPoints || cellHeight < autoPileMinHeight * 0.82) {
+            continue;
+          }
+
+          let neighborCount = 0;
+          let lowerNeighborCount = 0;
+          let maxNeighborHeight = 0;
+          let minNeighborHeight = Number.POSITIVE_INFINITY;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighbor = heightMap.get(`${cell.gx + dx},${cell.gy + dy}`);
+              if (!neighbor || neighbor.count < autoPileMinCellPoints) {
+                continue;
+              }
+              const neighborHeight = selectionHeight(neighbor);
+              neighborCount++;
+              maxNeighborHeight = Math.max(maxNeighborHeight, neighborHeight);
+              minNeighborHeight = Math.min(minNeighborHeight, neighborHeight);
+              if (neighborHeight <= cellHeight - stockpileBoundaryDrop) {
+                lowerNeighborCount++;
+              }
+            }
+          }
+
+          const localRange = Number.isFinite(minNeighborHeight)
+            ? Math.max(Math.abs(cellHeight - minNeighborHeight), Math.abs(maxNeighborHeight - cellHeight))
+            : 0;
+          const isCore = cellHeight >= coreHeight;
+          const isSlopeCell = cellHeight > nearGroundHeight * 0.92 && localRange >= stockpileBoundaryDrop * 0.4;
+          const hasSupport = neighborCount >= 2 || isCore;
+          const isFlatGroundFringe =
+            cellHeight <= nearGroundHeight * 0.9 &&
+            lowerNeighborCount === 0 &&
+            localRange < stockpileBoundaryDrop * 0.75;
+          if ((isCore || isSlopeCell) && hasSupport && !isFlatGroundFringe) {
+            candidateCells.set(key, cloneHeightMapCell(cell));
+          }
+        }
+
+        for (let pass = 0; pass < 2; pass++) {
+          const addKeys = [];
+          for (const [key, cell] of heightMap) {
+            const cellHeight = selectionHeight(cell);
+            if (candidateCells.has(key) || cell.count < autoPileMinCellPoints || cellHeight < edgeFringeHeight * 0.86) {
+              continue;
+            }
+
+            let selectedNeighborCount = 0;
+            let maxSelectedNeighborHeight = 0;
+            let localMaxHeight = cellHeight;
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) {
+                  continue;
+                }
+                const neighborKey = `${cell.gx + dx},${cell.gy + dy}`;
+                const neighbor = heightMap.get(neighborKey);
+                if (neighbor && neighbor.count >= autoPileMinCellPoints) {
+                  localMaxHeight = Math.max(localMaxHeight, selectionHeight(neighbor));
+                }
+                const selectedNeighbor = candidateCells.get(neighborKey);
+                if (selectedNeighbor) {
+                  selectedNeighborCount++;
+                  maxSelectedNeighborHeight = Math.max(maxSelectedNeighborHeight, selectionHeight(selectedNeighbor));
+                }
+              }
+            }
+
+            const localRise = localMaxHeight - cellHeight;
+            const isAttachedEdge =
+              selectedNeighborCount >= 3 ||
+              (selectedNeighborCount >= 2 && maxSelectedNeighborHeight - cellHeight <= maxSurfaceStep * 0.82);
+            const isLikelyCoalEdge =
+              cellHeight >= nearGroundHeight * 0.86 ||
+              localRise >= stockpileBoundaryDrop * 0.28 ||
+              maxSelectedNeighborHeight >= coreHeight;
+            if (isAttachedEdge && isLikelyCoalEdge) {
+              addKeys.push(key);
+            }
+          }
+          if (addKeys.length === 0) {
+            break;
+          }
+          for (const key of addKeys) {
+            candidateCells.set(key, cloneHeightMapCell(heightMap.get(key)));
+          }
+        }
+        return candidateCells;
       }
 
       function pruneConveyorLikeCells(cells, heightOfCell) {
@@ -1279,8 +1939,8 @@
         return [a[0][3], a[1][3], a[2][3]];
       }
 
-      function fitHeightPlane(samples) {
-        if (samples.length < sideSurfaceFitMinNeighbors) {
+      function fitHeightPlaneCoefficients(samples, minSamples = 3) {
+        if (samples.length < minSamples) {
           return null;
         }
         let sx = 0;
@@ -1312,52 +1972,181 @@
         if (!solution) {
           return null;
         }
-        const [a, b, c] = solution;
-        return (x, y) => a * x + b * y + c;
+        return solution;
       }
 
-      function fittedSideSurfaceHeight(cells, gx, gy, heightOfCell) {
-        const samples = [];
-        for (let dx = -sideSurfaceFitRadius; dx <= sideSurfaceFitRadius; dx++) {
-          for (let dy = -sideSurfaceFitRadius; dy <= sideSurfaceFitRadius; dy++) {
-            if (dx === 0 && dy === 0) {
-              continue;
-            }
-            if (Math.hypot(dx, dy) > sideSurfaceFitRadius) {
-              continue;
-            }
-            const neighbor = cells.get(`${gx + dx},${gy + dy}`);
-            if (neighbor === undefined) {
-              continue;
-            }
-            samples.push({ x: gx + dx, y: gy + dy, h: heightOfCell(neighbor) });
-          }
-        }
-        if (samples.length < sideSurfaceFitMinNeighbors) {
+      function fitZPlane(samples, minSamples = 30) {
+        if (samples.length < minSamples) {
           return null;
         }
-        samples.sort((a, b) => a.h - b.h);
-        const sampleCount = Math.max(
-          sideSurfaceFitMinNeighbors,
-          Math.floor(samples.length * sideSurfaceFitLowerFraction),
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        let sxx = 0;
+        let syy = 0;
+        let sxy = 0;
+        let sxz = 0;
+        let syz = 0;
+        for (const sample of samples) {
+          sx += sample.x;
+          sy += sample.y;
+          sz += sample.z;
+          sxx += sample.x * sample.x;
+          syy += sample.y * sample.y;
+          sxy += sample.x * sample.y;
+          sxz += sample.x * sample.z;
+          syz += sample.y * sample.z;
+        }
+        const solution = solve3x3(
+          [
+            [sxx, sxy, sx],
+            [sxy, syy, sy],
+            [sx, sy, samples.length],
+          ],
+          [sxz, syz, sz],
         );
-        const plane = fitHeightPlane(samples.slice(0, sampleCount));
-        return plane ? plane(gx, gy) : null;
+        if (!solution) {
+          return null;
+        }
+        const [za, zb, zc] = solution;
+        const norm = Math.hypot(za, zb, -1);
+        if (norm < 1e-9) {
+          return null;
+        }
+        let plane = {
+          a: -za / norm,
+          b: -zb / norm,
+          c: 1 / norm,
+          d: -zc / norm,
+        };
+        if (plane.c < 0) {
+          plane = { a: -plane.a, b: -plane.b, c: -plane.c, d: -plane.d };
+        }
+        return plane;
       }
 
-      function pruneCellsAboveFittedSideSurface(cells, heightOfCell) {
+      function heightAbovePlane(plane, x, y, z) {
+        return plane.a * x + plane.b * y + plane.c * z + plane.d;
+      }
+
+      function planeFromThreePoints(p1, p2, p3) {
+        const ux = p2.x - p1.x;
+        const uy = p2.y - p1.y;
+        const uz = p2.z - p1.z;
+        const vx = p3.x - p1.x;
+        const vy = p3.y - p1.y;
+        const vz = p3.z - p1.z;
+        let a = uy * vz - uz * vy;
+        let b = uz * vx - ux * vz;
+        let c = ux * vy - uy * vx;
+        let norm = Math.hypot(a, b, c);
+        if (norm < 1e-9) {
+          return null;
+        }
+        a /= norm;
+        b /= norm;
+        c /= norm;
+        let d = -(a * p1.x + b * p1.y + c * p1.z);
+        if (c < 0) {
+          a = -a;
+          b = -b;
+          c = -c;
+          d = -d;
+        }
+        return { a, b, c, d };
+      }
+
+      function fitGroundPlaneRansac(samples, options = {}) {
+        const minSamples = options.minSamples || 30;
+        if (samples.length < minSamples) {
+          return null;
+        }
+        const iterations = options.iterations || 240;
+        const threshold = options.threshold || 0.18;
+        const maxCandidates = options.maxCandidates || 1800;
+        const stride = Math.max(1, Math.floor(samples.length / maxCandidates));
+        const candidates = [];
+        for (let index = 0; index < samples.length; index += stride) {
+          candidates.push(samples[index]);
+        }
+        if (candidates.length < minSamples) {
+          return fitZPlane(samples, minSamples);
+        }
+
+        let seed = 1234567;
+        function nextRandomIndex(limit) {
+          seed = (1664525 * seed + 1013904223) >>> 0;
+          return seed % limit;
+        }
+
+        let bestPlane = null;
+        let bestInliers = [];
+        let bestScore = -1;
+        for (let iteration = 0; iteration < iterations; iteration++) {
+          const p1 = candidates[nextRandomIndex(candidates.length)];
+          const p2 = candidates[nextRandomIndex(candidates.length)];
+          const p3 = candidates[nextRandomIndex(candidates.length)];
+          if (p1 === p2 || p1 === p3 || p2 === p3) {
+            continue;
+          }
+          const plane = planeFromThreePoints(p1, p2, p3);
+          if (!plane || plane.c < 0.82) {
+            continue;
+          }
+
+          const inliers = [];
+          let residualSum = 0;
+          for (const point of candidates) {
+            const residual = Math.abs(heightAbovePlane(plane, point.x, point.y, point.z));
+            if (residual <= threshold) {
+              inliers.push(point);
+              residualSum += residual;
+            }
+          }
+          const meanResidual = inliers.length > 0 ? residualSum / inliers.length : Number.POSITIVE_INFINITY;
+          const score = inliers.length - meanResidual * 8;
+          if (inliers.length >= minSamples && score > bestScore) {
+            bestScore = score;
+            bestPlane = plane;
+            bestInliers = inliers;
+          }
+        }
+
+        if (!bestPlane || bestInliers.length < minSamples) {
+          return fitZPlane(samples, minSamples);
+        }
+        const refinedInliers = samples.filter(
+          (point) => Math.abs(heightAbovePlane(bestPlane, point.x, point.y, point.z)) <= threshold * 1.35,
+        );
+        const refinedPlane = fitZPlane(refinedInliers, minSamples) || bestPlane;
+        refinedPlane.ransacInliers = refinedInliers.length;
+        refinedPlane.ransacCandidates = samples.length;
+        return refinedPlane;
+      }
+
+      function pruneUnsupportedStockpileCells(cells) {
         const removeKeys = new Set();
         for (const [key, cell] of cells) {
-          const height = heightOfCell(cell);
-          if (height < conveyorMinHeight) {
-            continue;
-          }
           const { gx, gy } = parseGridKey(key);
-          const fittedHeight = fittedSideSurfaceHeight(cells, gx, gy, heightOfCell);
-          if (fittedHeight === null) {
-            continue;
+          let neighborCount = 0;
+          let lowerOrSimilarNeighbors = 0;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighbor = cells.get(`${gx + dx},${gy + dy}`);
+              if (!neighbor) {
+                continue;
+              }
+              neighborCount++;
+              if (neighbor.surfaceHeight >= cell.surfaceHeight - maxSurfaceStep) {
+                lowerOrSimilarNeighbors++;
+              }
+            }
           }
-          if (height > fittedHeight + sideSurfaceOutlierHeight) {
+          const isHigh = cell.surfaceHeight >= conveyorMinHeight;
+          if (neighborCount <= 1 || (isHigh && lowerOrSimilarNeighbors <= 1)) {
             removeKeys.add(key);
           }
         }
@@ -1367,91 +2156,1009 @@
         return removeKeys.size;
       }
 
-      function clampCellsToFittedSideSurface(cells) {
-        const clamped = new Map();
-        for (const [key, height] of cells) {
-          const { gx, gy } = parseGridKey(key);
-          const fittedHeight = fittedSideSurfaceHeight(cells, gx, gy, (value) => value);
-          if (fittedHeight !== null && height > fittedHeight + sideSurfaceOutlierHeight) {
-            clamped.set(key, Math.max(staticVolumeMinHeight, fittedHeight));
-          } else {
-            clamped.set(key, height);
+      function fillSmallStockpileGaps(cells) {
+        const additions = new Map();
+        for (const [, cell] of cells) {
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const key = `${cell.gx + dx},${cell.gy + dy}`;
+              if (cells.has(key) || additions.has(key)) {
+                continue;
+              }
+              const neighborHeights = [];
+              for (let nx = -1; nx <= 1; nx++) {
+                for (let ny = -1; ny <= 1; ny++) {
+                  if (nx === 0 && ny === 0) {
+                    continue;
+                  }
+                  const neighbor = cells.get(`${cell.gx + dx + nx},${cell.gy + dy + ny}`);
+                  if (neighbor) {
+                    neighborHeights.push(neighbor.surfaceHeight);
+                  }
+                }
+              }
+              if (neighborHeights.length >= 5) {
+                additions.set(key, {
+                  count: 0,
+                  heights: [],
+                  surfaceHeight: robustHeightFromValues(neighborHeights, 0.5),
+                  maxHeight: Math.max(...neighborHeights),
+                  gx: cell.gx + dx,
+                  gy: cell.gy + dy,
+                  synthetic: true,
+                });
+              }
+            }
           }
         }
-        return clamped;
+        for (const [key, cell] of additions) {
+          cells.set(key, cell);
+        }
+        return additions.size;
       }
 
-      function autoDetectPile() {
+      function refineStockpileFootprintCells(cells) {
+        if (cells.size < 12) {
+          return { removed: 0, filled: 0 };
+        }
+        const heights = [...cells.values()]
+          .filter((cell) => !cell.synthetic)
+          .map((cell) => cell.surfaceHeight)
+          .sort((a, b) => a - b);
+        if (heights.length === 0) {
+          return { removed: 0, filled: 0 };
+        }
+        const coreHeight = Math.max(staticVolumeMinHeight * 2.0, quantile(heights, 0.55));
+        const peakHeight = heights[heights.length - 1];
+        const nearGroundHeight = Math.max(staticVolumeMinHeight * 1.8, Math.min(coreHeight * 0.45, peakHeight * 0.12));
+        const slopeKeepHeight = Math.max(staticVolumeMinHeight * 2.2, Math.min(coreHeight * 0.75, peakHeight * 0.28));
+
+        const denseKeys = new Set();
+        for (const [key, cell] of cells) {
+          let neighborCount = 0;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              if (cells.has(`${cell.gx + dx},${cell.gy + dy}`)) {
+                neighborCount++;
+              }
+            }
+          }
+          if (cell.surfaceHeight >= coreHeight || neighborCount >= stockpileFootprintMinNeighborCells + 2) {
+            denseKeys.add(key);
+          }
+        }
+        if (denseKeys.size === 0) {
+          return { removed: 0, filled: 0 };
+        }
+
+        const visited = new Set();
+        const components = [];
+        for (const startKey of denseKeys) {
+          if (visited.has(startKey)) {
+            continue;
+          }
+          const queue = [startKey];
+          const keys = new Set([startKey]);
+          visited.add(startKey);
+          let score = 0;
+          for (let cursor = 0; cursor < queue.length; cursor++) {
+            const key = queue[cursor];
+            const cell = cells.get(key);
+            if (!cell) {
+              continue;
+            }
+            score += cell.surfaceHeight;
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) {
+                  continue;
+                }
+                const nextKey = `${cell.gx + dx},${cell.gy + dy}`;
+                if (!denseKeys.has(nextKey) || visited.has(nextKey)) {
+                  continue;
+                }
+                visited.add(nextKey);
+                keys.add(nextKey);
+                queue.push(nextKey);
+              }
+            }
+          }
+          let minGx = Number.POSITIVE_INFINITY;
+          let maxGx = Number.NEGATIVE_INFINITY;
+          let minGy = Number.POSITIVE_INFINITY;
+          let maxGy = Number.NEGATIVE_INFINITY;
+          for (const key of keys) {
+            const cell = cells.get(key);
+            if (!cell) {
+              continue;
+            }
+            minGx = Math.min(minGx, cell.gx);
+            maxGx = Math.max(maxGx, cell.gx);
+            minGy = Math.min(minGy, cell.gy);
+            maxGy = Math.max(maxGy, cell.gy);
+          }
+          components.push({ keys, score, minGx, maxGx, minGy, maxGy });
+        }
+        components.sort((a, b) => b.score - a.score || b.keys.size - a.keys.size);
+        const bestScore = components[0].score;
+        const primary = components[0];
+        const coreKeys = new Set();
+        for (const component of components) {
+          const touchesPrimary =
+            component.minGx <= primary.maxGx + 1 &&
+            component.maxGx >= primary.minGx - 1 &&
+            component.minGy <= primary.maxGy + 1 &&
+            component.maxGy >= primary.minGy - 1;
+          const isSignificant = component.score >= bestScore * 0.25 || component.keys.size >= primary.keys.size * 0.25;
+          if (component === primary || (touchesPrimary && isSignificant)) {
+            for (const key of component.keys) {
+              coreKeys.add(key);
+            }
+          }
+        }
+
+        const footprintKeys = new Set(coreKeys);
+        const queue = [...coreKeys];
+        for (let cursor = 0; cursor < queue.length; cursor++) {
+          const key = queue[cursor];
+          const cell = cells.get(key);
+          if (!cell) {
+            continue;
+          }
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const nextKey = `${cell.gx + dx},${cell.gy + dy}`;
+              if (footprintKeys.has(nextKey)) {
+                continue;
+              }
+              const nextCell = cells.get(nextKey);
+              if (!nextCell) {
+                continue;
+              }
+              let support = 0;
+              let selectedHeightSum = 0;
+              for (let sx = -1; sx <= 1; sx++) {
+                for (let sy = -1; sy <= 1; sy++) {
+                  if (sx === 0 && sy === 0) {
+                    continue;
+                  }
+                  const supportKey = `${nextCell.gx + sx},${nextCell.gy + sy}`;
+                  if (footprintKeys.has(supportKey)) {
+                    support++;
+                    const supportCell = cells.get(supportKey);
+                    if (supportCell) {
+                      selectedHeightSum += supportCell.surfaceHeight;
+                    }
+                  }
+                }
+              }
+              if (support < 2) {
+                continue;
+              }
+              const meanSelectedHeight = selectedHeightSum / support;
+              const dropFromCurrent = cell.surfaceHeight - nextCell.surfaceHeight;
+              const dropFromSelected = meanSelectedHeight - nextCell.surfaceHeight;
+              const isGroundLikeBoundary =
+                nextCell.surfaceHeight <= nearGroundHeight &&
+                Math.max(dropFromCurrent, dropFromSelected) >= stockpileBoundaryDrop;
+              if (isGroundLikeBoundary) {
+                continue;
+              }
+              const isInsideSlope =
+                nextCell.surfaceHeight >= slopeKeepHeight ||
+                Math.abs(nextCell.surfaceHeight - meanSelectedHeight) <= maxSurfaceStep * 0.75 ||
+                Math.abs(nextCell.surfaceHeight - cell.surfaceHeight) <= maxSurfaceStep * 0.75;
+              const heightIsContinuous =
+                isInsideSlope &&
+                nextCell.surfaceHeight > nearGroundHeight;
+              if (heightIsContinuous) {
+                footprintKeys.add(nextKey);
+                queue.push(nextKey);
+              }
+            }
+          }
+        }
+
+        const removedEntries = [];
+        for (const key of [...cells.keys()]) {
+          if (!footprintKeys.has(key)) {
+            removedEntries.push([key, cells.get(key)]);
+            cells.delete(key);
+          }
+        }
+        const filled = fillSmallStockpileGaps(cells);
+        return { removed: removedEntries.length, filled };
+      }
+
+      function stockpileComponentMetrics(component, cells) {
+        const widthCells = component.maxGx - component.minGx + 1;
+        const depthCells = component.maxGy - component.minGy + 1;
+        const shortSide = Math.max(1, Math.min(widthCells, depthCells));
+        const longSide = Math.max(widthCells, depthCells);
+        const bboxArea = Math.max(1, widthCells * depthCells);
+        const fillRatio = component.realCellCount / bboxArea;
+        const aspectRatio = longSide / shortSide;
+        const meanHeight = component.totalHeight / Math.max(1, component.keys.size);
+        let minHeight = Number.POSITIVE_INFINITY;
+        let lowBandCells = 0;
+        let topBandCells = 0;
+        const lowBandLimit = component.peakHeight * 0.45;
+        const topBandLimit = component.peakHeight * 0.78;
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || cell.synthetic) {
+            continue;
+          }
+          minHeight = Math.min(minHeight, cell.surfaceHeight);
+          if (cell.surfaceHeight <= lowBandLimit) {
+            lowBandCells++;
+          }
+          if (cell.surfaceHeight >= topBandLimit) {
+            topBandCells++;
+          }
+        }
+        if (!Number.isFinite(minHeight)) {
+          minHeight = 0;
+        }
+        const heightSpread = component.peakHeight - minHeight;
+        const lowBandRatio = lowBandCells / Math.max(1, component.realCellCount);
+        const topBandRatio = topBandCells / Math.max(1, component.realCellCount);
+        const compactness = fillRatio / Math.sqrt(Math.max(1, aspectRatio));
+        const moundProfile = Math.max(0.35, 1.0 + lowBandRatio - topBandRatio * 0.65);
+        const score =
+          component.totalHeight *
+          Math.max(0.12, compactness) *
+          Math.sqrt(component.realCellCount) *
+          moundProfile;
+        return {
+          widthCells,
+          depthCells,
+          fillRatio,
+          aspectRatio,
+          meanHeight,
+          heightSpread,
+          lowBandRatio,
+          topBandRatio,
+          score,
+        };
+      }
+
+      function stockpilePlanarSurfaceAnalysis(component, cells) {
+        const samples = [];
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || cell.synthetic) {
+            continue;
+          }
+          samples.push({ key, x: cell.gx, y: cell.gy, h: cell.surfaceHeight });
+        }
+        const minPatchCells = Math.max(8, Math.min(22, Math.floor(samples.length * 0.08)));
+        if (samples.length < minPatchCells) {
+          return {
+            planeCount: 0,
+            coverage: 0,
+            meanResidual: Number.POSITIVE_INFINITY,
+            explainedCells: 0,
+            selectionKeys: new Set(),
+            outlierKeys: new Set(),
+            planes: [],
+          };
+        }
+
+        const sampleByKey = new Map(samples.map((sample) => [sample.key, sample]));
+        const remaining = new Set(samples.map((sample) => sample.key));
+        const planes = [];
+        const explainedKeys = new Set();
+        let explainedCells = 0;
+        let residualSum = 0;
+        let residualCount = 0;
+
+        for (let patchIndex = 0; patchIndex < stockpileMaxPlanePatches && remaining.size >= minPatchCells; patchIndex++) {
+          const seedCandidates = [...remaining]
+            .map((key) => sampleByKey.get(key))
+            .filter(Boolean)
+            .sort((a, b) => b.h - a.h)
+            .filter((_, index, list) => index < 36 || index % Math.max(1, Math.floor(list.length / 36)) === 0);
+
+          let bestPatch = null;
+          for (const seed of seedCandidates) {
+            const localSamples = [];
+            for (const key of remaining) {
+              const sample = sampleByKey.get(key);
+              if (!sample) {
+                continue;
+              }
+              if (Math.hypot(sample.x - seed.x, sample.y - seed.y) <= stockpilePlaneFitRadius) {
+                localSamples.push(sample);
+              }
+            }
+            if (localSamples.length < minPatchCells) {
+              continue;
+            }
+            const coefficients = fitHeightPlaneCoefficients(localSamples, minPatchCells);
+            if (!coefficients) {
+              continue;
+            }
+            const [a, b, c] = coefficients;
+            const physicalSlope = Math.hypot(a, b) / autoPileGridSize;
+            if (physicalSlope > 5.0) {
+              continue;
+            }
+
+            const inliers = [];
+            let patchResidual = 0;
+            for (const key of remaining) {
+              const sample = sampleByKey.get(key);
+              if (!sample) {
+                continue;
+              }
+              const residual = Math.abs(sample.h - (a * sample.x + b * sample.y + c));
+              if (residual <= stockpilePlaneResidual) {
+                inliers.push(key);
+                patchResidual += residual;
+              }
+            }
+            if (
+              !bestPatch ||
+              inliers.length > bestPatch.inliers.length ||
+              (inliers.length === bestPatch.inliers.length && patchResidual < bestPatch.residual)
+            ) {
+              bestPatch = { coefficients, inliers, residual: patchResidual, physicalSlope };
+            }
+          }
+
+          if (!bestPatch || bestPatch.inliers.length < minPatchCells) {
+            break;
+          }
+          for (const key of bestPatch.inliers) {
+            remaining.delete(key);
+            explainedKeys.add(key);
+          }
+          planes.push(bestPatch);
+          explainedCells += bestPatch.inliers.length;
+          residualSum += bestPatch.residual;
+          residualCount += bestPatch.inliers.length;
+        }
+
+        const expandedKeys = new Set(explainedKeys);
+        for (const key of explainedKeys) {
+          const sample = sampleByKey.get(key);
+          if (!sample) {
+            continue;
+          }
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighborKey = `${sample.x + dx},${sample.y + dy}`;
+              if (!component.keys.has(neighborKey) || expandedKeys.has(neighborKey)) {
+                continue;
+              }
+              const neighbor = sampleByKey.get(neighborKey);
+              if (neighbor && Math.abs(neighbor.h - sample.h) <= maxSurfaceStep) {
+                expandedKeys.add(neighborKey);
+              }
+            }
+          }
+        }
+
+        const outlierKeys = new Set();
+        const residualOutlierLimit = Math.max(0.32, stockpilePlaneResidual * 2.4);
+        const protrusionLimit = Math.max(0.28, stockpilePlaneResidual * 2.0);
+        for (const sample of samples) {
+          if (expandedKeys.has(sample.key) || planes.length === 0) {
+            continue;
+          }
+
+          let bestResidual = Number.POSITIVE_INFINITY;
+          let bestPredicted = null;
+          for (const plane of planes) {
+            const [a, b, c] = plane.coefficients;
+            const predicted = a * sample.x + b * sample.y + c;
+            const residual = Math.abs(sample.h - predicted);
+            if (residual < bestResidual) {
+              bestResidual = residual;
+              bestPredicted = predicted;
+            }
+          }
+          if (bestPredicted === null || sample.h <= bestPredicted + residualOutlierLimit) {
+            continue;
+          }
+
+          const neighborHeights = [];
+          let neighborCount = 0;
+          let closeNeighborCount = 0;
+          let supportPairCount = 0;
+          const supportPairs = [
+            [[1, 0], [-1, 0]],
+            [[0, 1], [0, -1]],
+            [[1, 1], [-1, -1]],
+            [[1, -1], [-1, 1]],
+          ];
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighborKey = `${sample.x + dx},${sample.y + dy}`;
+              if (!component.keys.has(neighborKey)) {
+                continue;
+              }
+              const neighbor = sampleByKey.get(neighborKey);
+              if (!neighbor) {
+                continue;
+              }
+              neighborCount++;
+              neighborHeights.push(neighbor.h);
+              if (Math.abs(neighbor.h - sample.h) <= maxSurfaceStep * 0.75) {
+                closeNeighborCount++;
+              }
+            }
+          }
+          for (const pair of supportPairs) {
+            if (pair.every(([dx, dy]) => component.keys.has(`${sample.x + dx},${sample.y + dy}`))) {
+              supportPairCount++;
+            }
+          }
+          const localMedian = neighborHeights.length > 0 ? robustHeightFromValues(neighborHeights, 0.5) : 0;
+          const isLocalProtrusion = neighborHeights.length > 0 && sample.h > localMedian + protrusionLimit;
+          const hasPoorSupport = neighborCount <= 4 || closeNeighborCount <= 1 || supportPairCount <= 1;
+          if (bestResidual >= residualOutlierLimit && isLocalProtrusion && hasPoorSupport) {
+            outlierKeys.add(sample.key);
+          }
+        }
+
+        return {
+          planeCount: planes.length,
+          coverage: explainedCells / Math.max(1, samples.length),
+          meanResidual: residualCount > 0 ? residualSum / residualCount : Number.POSITIVE_INFINITY,
+          explainedCells,
+          selectionKeys: expandedKeys,
+          outlierKeys,
+          planes,
+        };
+      }
+
+      function fitStockpileSidePlane(samples, minSamples) {
+        if (samples.length < minSamples) {
+          return null;
+        }
+
+        let seed = 9157 + samples.length * 131;
+        function randomIndex(limit) {
+          seed = (1103515245 * seed + 12345) >>> 0;
+          return seed % limit;
+        }
+
+        let best = null;
+        const iterations = Math.min(180, Math.max(60, samples.length * 4));
+        const residualLimit = stockpilePlaneResidual * 1.35;
+        for (let iteration = 0; iteration < iterations; iteration++) {
+          const picked = new Set();
+          while (picked.size < 3) {
+            picked.add(randomIndex(samples.length));
+          }
+          const localSamples = [...picked].map((index) => samples[index]);
+          const coefficients = fitHeightPlaneCoefficients(localSamples, 3);
+          if (!coefficients) {
+            continue;
+          }
+          const [a, b, c] = coefficients;
+          const physicalSlope = Math.hypot(a, b) / autoPileGridSize;
+          if (physicalSlope < 0.12 || physicalSlope > 6.0) {
+            continue;
+          }
+
+          const inliers = [];
+          let residualSum = 0;
+          for (const sample of samples) {
+            const predicted = a * sample.x + b * sample.y + c;
+            const residual = Math.abs(sample.h - predicted);
+            if (residual <= residualLimit) {
+              inliers.push(sample);
+              residualSum += residual;
+            }
+          }
+          if (inliers.length < minSamples) {
+            continue;
+          }
+          const score = inliers.length - residualSum * 5;
+          if (!best || score > best.score) {
+            best = { coefficients, inliers, residual: residualSum / inliers.length, physicalSlope, score };
+          }
+        }
+
+        if (!best) {
+          return null;
+        }
+        const refined = fitHeightPlaneCoefficients(best.inliers, minSamples);
+        if (refined) {
+          best.coefficients = refined;
+        }
+        return best;
+      }
+
+      function refineStockpileBySidePlanes(component, cells) {
+        const samples = [];
+        let weightedX = 0;
+        let weightedY = 0;
+        let weightSum = 0;
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || cell.synthetic) {
+            continue;
+          }
+          const weight = Math.max(cell.surfaceHeight, staticVolumeMinHeight);
+          samples.push({ key, x: cell.gx, y: cell.gy, h: cell.surfaceHeight });
+          weightedX += cell.gx * weight;
+          weightedY += cell.gy * weight;
+          weightSum += weight;
+        }
+        if (samples.length < 18 || weightSum <= 0) {
+          return { planeCount: 0, removed: 0, coverage: 0 };
+        }
+
+        const centerX = weightedX / weightSum;
+        const centerY = weightedY / weightSum;
+        const sectorCount = 8;
+        const sectors = Array.from({ length: sectorCount }, () => []);
+        for (const sample of samples) {
+          const radius = Math.hypot(sample.x - centerX, sample.y - centerY);
+          if (radius < 1.5) {
+            continue;
+          }
+          const angle = Math.atan2(sample.y - centerY, sample.x - centerX);
+          const sector = Math.floor(((angle + Math.PI) / (Math.PI * 2)) * sectorCount) % sectorCount;
+          sectors[sector].push(sample);
+        }
+
+        const planes = [];
+        for (const sectorSamples of sectors) {
+          const minSamples = Math.max(6, Math.min(18, Math.floor(sectorSamples.length * 0.35)));
+          const plane = fitStockpileSidePlane(sectorSamples, minSamples);
+          if (plane) {
+            planes.push(plane);
+          }
+        }
+        if (planes.length === 0) {
+          return { planeCount: 0, removed: 0, coverage: 0 };
+        }
+
+        const keepKeys = new Set();
+        const sampleHeights = samples.map((sample) => sample.h).sort((a, b) => a - b);
+        const highCoreHeight = Math.min(
+          component.peakHeight * 0.72,
+          Math.max(component.peakHeight * 0.55, quantile(sampleHeights, 0.78)),
+        );
+        const highContinuityHeight = Math.max(component.peakHeight * 0.45, quantile(sampleHeights, 0.68));
+        let covered = 0;
+        for (const sample of samples) {
+          let bestResidual = Number.POSITIVE_INFINITY;
+          let bestPredicted = null;
+          for (const plane of planes) {
+            const [a, b, c] = plane.coefficients;
+            const predicted = a * sample.x + b * sample.y + c;
+            const residual = Math.abs(sample.h - predicted);
+            if (residual < bestResidual) {
+              bestResidual = residual;
+              bestPredicted = predicted;
+            }
+          }
+
+          let neighborCount = 0;
+          let highNeighborCount = 0;
+          let supportPairCount = 0;
+          const supportPairs = [
+            [[1, 0], [-1, 0]],
+            [[0, 1], [0, -1]],
+            [[1, 1], [-1, -1]],
+            [[1, -1], [-1, 1]],
+          ];
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighbor = cells.get(`${sample.x + dx},${sample.y + dy}`);
+              if (!neighbor || !component.keys.has(`${sample.x + dx},${sample.y + dy}`)) {
+                continue;
+              }
+              neighborCount++;
+              if (
+                neighbor.surfaceHeight >= highContinuityHeight ||
+                Math.abs(neighbor.surfaceHeight - sample.h) <= maxSurfaceStep * 0.8
+              ) {
+                highNeighborCount++;
+              }
+            }
+          }
+          for (const pair of supportPairs) {
+            if (pair.every(([dx, dy]) => component.keys.has(`${sample.x + dx},${sample.y + dy}`))) {
+              supportPairCount++;
+            }
+          }
+
+          const isHighCore = sample.h >= highCoreHeight;
+          const isContinuousHighRegion =
+            sample.h >= highContinuityHeight &&
+            (highNeighborCount >= 3 || (highNeighborCount >= 2 && supportPairCount >= 1));
+          const fitsSide = bestResidual <= stockpilePlaneResidual * 1.8;
+          const isUnsupportedHighOutlier =
+            bestPredicted !== null &&
+            sample.h > bestPredicted + Math.max(0.35, stockpilePlaneResidual * 2.6) &&
+            !isHighCore &&
+            !isContinuousHighRegion &&
+            (neighborCount <= 4 || highNeighborCount <= 1 || supportPairCount <= 1);
+          const isPlanarOutlier = component.planarOutlierKeys?.has(sample.key);
+          if (!isUnsupportedHighOutlier && !isPlanarOutlier) {
+            keepKeys.add(sample.key);
+            if (fitsSide) {
+              covered++;
+            }
+          }
+        }
+
+        if (keepKeys.size < Math.max(8, component.realCellCount * 0.28)) {
+          return { planeCount: planes.length, removed: 0, coverage: covered / Math.max(1, samples.length) };
+        }
+        const before = component.keys.size;
+        updateComponentFromKeys(component, keepKeys, cells);
+        component.stockpile = stockpileComponentMetrics(component, cells);
+        return {
+          planeCount: planes.length,
+          removed: before - component.keys.size,
+          coverage: covered / Math.max(1, samples.length),
+        };
+      }
+
+      function pruneStockpileProtrusionComponents(component, cells) {
+        const protrusionCells = new Map();
+        const sampleHeights = [];
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || cell.synthetic) {
+            continue;
+          }
+          sampleHeights.push(cell.surfaceHeight);
+        }
+        if (sampleHeights.length < 20) {
+          return { removed: 0, components: 0, cells: new Set() };
+        }
+        sampleHeights.sort((a, b) => a - b);
+        const highCoreHeight = Math.max(quantile(sampleHeights, 0.86), component.peakHeight * 0.62);
+
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || cell.synthetic || cell.surfaceHeight >= highCoreHeight) {
+            continue;
+          }
+
+          const localHeights = [];
+          for (let dx = -stockpileProtrusionRadius; dx <= stockpileProtrusionRadius; dx++) {
+            for (let dy = -stockpileProtrusionRadius; dy <= stockpileProtrusionRadius; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              if (Math.hypot(dx, dy) > stockpileProtrusionRadius + 0.01) {
+                continue;
+              }
+              const neighbor = cells.get(`${cell.gx + dx},${cell.gy + dy}`);
+              if (neighbor && component.keys.has(`${cell.gx + dx},${cell.gy + dy}`) && !neighbor.synthetic) {
+                localHeights.push(neighbor.surfaceHeight);
+              }
+            }
+          }
+          if (localHeights.length < 10) {
+            continue;
+          }
+          const localSurface = robustHeightFromValues(localHeights, 0.45);
+          const protrusion = cell.surfaceHeight - localSurface;
+          if (protrusion < stockpileProtrusionHeight) {
+            continue;
+          }
+
+          let closeNeighborCount = 0;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              if (dx === 0 && dy === 0) {
+                continue;
+              }
+              const neighbor = cells.get(`${cell.gx + dx},${cell.gy + dy}`);
+              if (!neighbor || !component.keys.has(`${cell.gx + dx},${cell.gy + dy}`)) {
+                continue;
+              }
+              if (Math.abs(neighbor.surfaceHeight - cell.surfaceHeight) <= maxSurfaceStep * 0.55) {
+                closeNeighborCount++;
+              }
+            }
+          }
+          protrusionCells.set(key, { cell, protrusion, closeNeighborCount });
+        }
+
+        const visited = new Set();
+        const removeKeys = new Set();
+        let removedComponents = 0;
+        for (const [startKey, start] of protrusionCells) {
+          if (visited.has(startKey)) {
+            continue;
+          }
+          const queue = [start.cell];
+          const keys = new Set([startKey]);
+          visited.add(startKey);
+          let protrusionSum = 0;
+          let closeSupportSum = 0;
+          let minGx = start.cell.gx;
+          let maxGx = start.cell.gx;
+          let minGy = start.cell.gy;
+          let maxGy = start.cell.gy;
+
+          for (let cursor = 0; cursor < queue.length; cursor++) {
+            const cell = queue[cursor];
+            const item = protrusionCells.get(`${cell.gx},${cell.gy}`);
+            if (item) {
+              protrusionSum += item.protrusion;
+              closeSupportSum += item.closeNeighborCount;
+            }
+            minGx = Math.min(minGx, cell.gx);
+            maxGx = Math.max(maxGx, cell.gx);
+            minGy = Math.min(minGy, cell.gy);
+            maxGy = Math.max(maxGy, cell.gy);
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) {
+                  continue;
+                }
+                const nextKey = `${cell.gx + dx},${cell.gy + dy}`;
+                if (visited.has(nextKey) || !protrusionCells.has(nextKey)) {
+                  continue;
+                }
+                const next = protrusionCells.get(nextKey).cell;
+                visited.add(nextKey);
+                keys.add(nextKey);
+                queue.push(next);
+              }
+            }
+          }
+
+          const width = maxGx - minGx + 1;
+          const depth = maxGy - minGy + 1;
+          const shortSide = Math.max(1, Math.min(width, depth));
+          const longSide = Math.max(width, depth);
+          const bboxArea = Math.max(1, width * depth);
+          const aspectRatio = longSide / shortSide;
+          const fillRatio = keys.size / bboxArea;
+          const meanProtrusion = protrusionSum / Math.max(1, keys.size);
+          const meanCloseSupport = closeSupportSum / Math.max(1, keys.size);
+          const isSmall = keys.size <= stockpileProtrusionMaxCells;
+          const isThinOrSparse = aspectRatio >= stockpileProtrusionMinAspectRatio || fillRatio <= 0.55;
+          const isUnsupported = meanCloseSupport <= 3.2;
+          const isStrongProtrusion = meanProtrusion >= stockpileProtrusionHeight;
+          if (
+            keys.size >= stockpileProtrusionMinCells &&
+            isSmall &&
+            isStrongProtrusion &&
+            (isThinOrSparse || isUnsupported)
+          ) {
+            removedComponents++;
+            for (const key of keys) {
+              removeKeys.add(key);
+            }
+          }
+        }
+
+        if (removeKeys.size === 0) {
+          return { removed: 0, components: 0, cells: removeKeys };
+        }
+        const keepKeys = new Set([...component.keys].filter((key) => !removeKeys.has(key)));
+        if (keepKeys.size < Math.max(8, component.realCellCount * 0.35)) {
+          return { removed: 0, components: 0, cells: new Set() };
+        }
+        updateComponentFromKeys(component, keepKeys, cells);
+        component.stockpile = stockpileComponentMetrics(component, cells);
+        return { removed: removeKeys.size, components: removedComponents, cells: removeKeys };
+      }
+
+      function updateComponentFromKeys(component, keys, cells) {
+        let totalHeight = 0;
+        let peakHeight = 0;
+        let realCellCount = 0;
+        let minGx = Number.POSITIVE_INFINITY;
+        let maxGx = Number.NEGATIVE_INFINITY;
+        let minGy = Number.POSITIVE_INFINITY;
+        let maxGy = Number.NEGATIVE_INFINITY;
+        for (const key of keys) {
+          const cell = cells.get(key);
+          if (!cell) {
+            continue;
+          }
+          totalHeight += cell.surfaceHeight;
+          peakHeight = Math.max(peakHeight, cell.surfaceHeight);
+          if (!cell.synthetic) {
+            realCellCount++;
+          }
+          minGx = Math.min(minGx, cell.gx);
+          maxGx = Math.max(maxGx, cell.gx);
+          minGy = Math.min(minGy, cell.gy);
+          maxGy = Math.max(maxGy, cell.gy);
+        }
+        if (!Number.isFinite(minGx) || realCellCount === 0) {
+          return false;
+        }
+        component.keys = new Set(keys);
+        component.totalHeight = totalHeight;
+        component.peakHeight = peakHeight;
+        component.realCellCount = realCellCount;
+        component.minGx = minGx;
+        component.maxGx = maxGx;
+        component.minGy = minGy;
+        component.maxGy = maxGy;
+        return true;
+      }
+
+      function componentHeightCells(component, cells) {
+        const heightCells = new Map();
+        for (const key of component.keys) {
+          const cell = cells.get(key);
+          if (!cell || !Number.isFinite(cell.surfaceHeight)) {
+            continue;
+          }
+          heightCells.set(key, cell.surfaceHeight);
+        }
+        return heightCells;
+      }
+
+      function completeContinuousStockpileSurface(component, cells) {
+        const completedKeys = new Set(component.keys);
+        let addedTotal = 0;
+        for (let pass = 0; pass < stockpileSurfaceCompletionPasses; pass++) {
+          const additions = new Set();
+          for (const key of completedKeys) {
+            const cell = cells.get(key);
+            if (!cell) {
+              continue;
+            }
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) {
+                  continue;
+                }
+                const nextKey = `${cell.gx + dx},${cell.gy + dy}`;
+                if (completedKeys.has(nextKey) || additions.has(nextKey)) {
+                  continue;
+                }
+                const candidate = cells.get(nextKey);
+                if (!candidate || candidate.synthetic) {
+                  continue;
+                }
+
+                let selectedNeighbors = 0;
+                let closeHeightNeighbors = 0;
+                let neighborHeightSum = 0;
+                for (let nx = -1; nx <= 1; nx++) {
+                  for (let ny = -1; ny <= 1; ny++) {
+                    if (nx === 0 && ny === 0) {
+                      continue;
+                    }
+                    const neighborKey = `${candidate.gx + nx},${candidate.gy + ny}`;
+                    if (!completedKeys.has(neighborKey)) {
+                      continue;
+                    }
+                    const neighbor = cells.get(neighborKey);
+                    if (!neighbor) {
+                      continue;
+                    }
+                    selectedNeighbors++;
+                    neighborHeightSum += neighbor.surfaceHeight;
+                    if (Math.abs(neighbor.surfaceHeight - candidate.surfaceHeight) <= maxSurfaceStep) {
+                      closeHeightNeighbors++;
+                    }
+                  }
+                }
+                if (selectedNeighbors < 2 || closeHeightNeighbors < 2) {
+                  continue;
+                }
+                const meanNeighborHeight = neighborHeightSum / selectedNeighbors;
+                const isGroundLikeBoundary =
+                  candidate.surfaceHeight <= staticVolumeMinHeight * 2.0 &&
+                  meanNeighborHeight - candidate.surfaceHeight >= stockpileBoundaryDrop;
+                if (isGroundLikeBoundary) {
+                  continue;
+                }
+                const isSurfaceContinuous =
+                  Math.abs(candidate.surfaceHeight - meanNeighborHeight) <= maxSurfaceStep ||
+                  candidate.surfaceHeight <= meanNeighborHeight + stockpilePlaneResidual;
+                if (isSurfaceContinuous) {
+                  additions.add(nextKey);
+                }
+              }
+            }
+          }
+          if (additions.size === 0) {
+            break;
+          }
+          addedTotal += additions.size;
+          for (const key of additions) {
+            completedKeys.add(key);
+          }
+        }
+        if (addedTotal > 0) {
+          updateComponentFromKeys(component, completedKeys, cells);
+          component.stockpile = stockpileComponentMetrics(component, cells);
+        }
+        return addedTotal;
+      }
+
+      function autoDetectPile(selectedObjectType = "stockpile") {
+        const objectType = selectedObjectType === "box" ? "box" : "stockpile";
+        const objectLabel = objectType === "box" ? "box object" : "stockpile";
         if (latestPoints.length === 0) {
-          setOperationStatus("Auto pile failed: no point cloud loaded", true);
+          setOperationStatus("Cluster failed: no point cloud loaded", true);
           return;
         }
         if (!groundFitted) {
-          setOperationStatus("Auto pile failed: run Fit ground first", true);
+          setOperationStatus("Cluster failed: run Fit ground first", true);
           return;
         }
 
         const minCellPoints = autoPileMinCellPoints;
         const minCellHeight = autoPileMinHeight;
+        const maxCellHeight = objectType === "box" ? Number.POSITIVE_INFINITY : autoPileMaxHeight;
+        const minComponentCells = objectType === "box" ? 1 : Math.max(autoPileMinComponentCells, 8);
+        const minComponentPeakHeight = objectType === "box" ? autoPileMinHeight : autoPileMinComponentPeakHeight;
         const neighborDeltas = [];
         for (let dx = -autoPileNeighborRadius; dx <= autoPileNeighborRadius; dx++) {
           for (let dy = -autoPileNeighborRadius; dy <= autoPileNeighborRadius; dy++) {
             if (dx === 0 && dy === 0) {
               continue;
             }
-            if (Math.hypot(dx, dy) <= autoPileNeighborRadius) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) <= autoPileNeighborRadius) {
               neighborDeltas.push([dx, dy]);
             }
           }
         }
 
-        function detectPilesInRegion(searchRegion) {
-          const candidateCells = new Map();
-          for (let i = 0; i < latestPoints.length; i += 3) {
-            const x = latestPoints[i];
-            const y = latestPoints[i + 1];
-            if (searchRegion && !pointInRoiShape(searchRegion, x, y)) {
-              continue;
-            }
-            const z = latestPoints[i + 2];
-            const height = pointHeightAboveGround(x, y, z);
-            if (height <= autoPileMinHeight || height > autoPileMaxHeight) {
-              continue;
-            }
-
-            const key = pileCellKey(x, y);
-            const cell = candidateCells.get(key);
-            if (cell) {
-              cell.count++;
-              cell.heights.push(height);
-            } else {
-              candidateCells.set(key, {
-                count: 1,
-                heights: [height],
-                gx: Math.floor(x / autoPileGridSize),
-                gy: Math.floor(y / autoPileGridSize),
-              });
-            }
-          }
-
-          const validCells = new Map();
-          for (const [key, cell] of candidateCells) {
-            cell.surfaceHeight = robustHeightFromValues(cell.heights);
-            cell.maxHeight = Math.max(...cell.heights);
-            if (cell.count >= minCellPoints && cell.surfaceHeight >= minCellHeight) {
-              validCells.set(key, cell);
-            }
-          }
+        function detectObjectsInRegion(searchRegion) {
+          const heightMap = buildObjectHeightMap(searchRegion, maxCellHeight);
+          const validCells =
+            objectType === "stockpile"
+              ? stockpileCellsFromHeightMap(heightMap)
+              : new Map(
+                  [...heightMap]
+                    .filter(([, cell]) => cell.count >= minCellPoints && cell.surfaceHeight >= minCellHeight)
+                    .map(([key, cell]) => [key, cloneHeightMapCell(cell)]),
+                );
           if (validCells.size === 0) {
             return null;
           }
-          pruneConveyorLikeCells(validCells, (cell) => cell.surfaceHeight);
-          if (validCells.size === 0) {
-            return null;
-          }
-          pruneCellsAboveFittedSideSurface(validCells, (cell) => cell.surfaceHeight);
-          if (validCells.size === 0) {
-            return null;
+          const debugHeightMapCells = objectType === "stockpile" ? new Set(validCells.keys()) : new Set();
+          let debugFootprintCells = new Set();
+          const debugProtrusionOutlierCells = new Set();
+          let prunedNarrowCells = 0;
+          let prunedUnsupportedCells = 0;
+          let filledGapCells = 0;
+          let footprintPrunedCells = 0;
+          let footprintFilledCells = 0;
+          let completedSurfaceCells = 0;
+          let protrusionRemovedCells = 0;
+          let protrusionRemovedComponents = 0;
+          if (objectType === "stockpile") {
+            prunedNarrowCells = pruneConveyorLikeCells(validCells, (cell) => cell.surfaceHeight);
+            prunedUnsupportedCells = pruneUnsupportedStockpileCells(validCells);
+            filledGapCells = fillSmallStockpileGaps(validCells);
+            const footprint = refineStockpileFootprintCells(validCells);
+            footprintPrunedCells = footprint.removed;
+            footprintFilledCells = footprint.filled;
+            debugFootprintCells = new Set(validCells.keys());
           }
 
           const visited = new Set();
@@ -1465,6 +3172,7 @@
             visited.add(startKey);
             let totalHeight = 0;
             let peakHeight = 0;
+            let realCellCount = 0;
             let minGx = startCell.gx;
             let maxGx = startCell.gx;
             let minGy = startCell.gy;
@@ -1474,6 +3182,9 @@
               const cell = queue[cursor];
               totalHeight += cell.surfaceHeight;
               peakHeight = Math.max(peakHeight, cell.surfaceHeight);
+              if (!cell.synthetic) {
+                realCellCount++;
+              }
               minGx = Math.min(minGx, cell.gx);
               maxGx = Math.max(maxGx, cell.gx);
               minGy = Math.min(minGy, cell.gy);
@@ -1494,15 +3205,97 @@
               }
             }
 
-            const component = { keys, totalHeight, peakHeight, minGx, maxGx, minGy, maxGy };
+            const component = { keys, totalHeight, peakHeight, realCellCount, minGx, maxGx, minGy, maxGy };
+            if (objectType === "stockpile") {
+              component.stockpile = stockpileComponentMetrics(component, validCells);
+              completedSurfaceCells += completeContinuousStockpileSurface(component, validCells);
+              const protrusionRefinement = pruneStockpileProtrusionComponents(component, validCells);
+              protrusionRemovedCells += protrusionRefinement.removed;
+              protrusionRemovedComponents += protrusionRefinement.components;
+              for (const key of protrusionRefinement.cells) {
+                debugProtrusionOutlierCells.add(key);
+              }
+              component.heightCells = componentHeightCells(component, validCells);
+            }
             if (
-              component.keys.size >= autoPileMinComponentCells &&
-              component.peakHeight >= autoPileMinComponentPeakHeight
+              component.realCellCount >= minComponentCells &&
+              component.peakHeight >= minComponentPeakHeight
             ) {
               components.push(component);
             }
           }
-          components.sort((a, b) => b.totalHeight - a.totalHeight || b.keys.size - a.keys.size);
+          components.sort((a, b) => {
+            const aScore = a.stockpile ? a.stockpile.score : a.totalHeight;
+            const bScore = b.stockpile ? b.stockpile.score : b.totalHeight;
+            return bScore - aScore || b.totalHeight - a.totalHeight || b.keys.size - a.keys.size;
+          });
+          if (objectType === "stockpile" && components.length > 1) {
+            const largestRealCellCount = Math.max(...components.map((component) => component.realCellCount));
+            const bestScore = Math.max(...components.map((component) => component.stockpile.score));
+            const significantComponents = components.filter((component) => {
+              const metrics = component.stockpile;
+              const isMeaningfulMass =
+                component.realCellCount >= Math.max(minComponentCells, largestRealCellCount * 0.08);
+              const isStrongPeak = component.peakHeight >= Math.max(0.8, minComponentPeakHeight * 2);
+              const hasPileSurface =
+                metrics.fillRatio >= 0.18 ||
+                metrics.lowBandRatio >= 0.16 ||
+                metrics.heightSpread >= 0.45 ||
+                component.realCellCount >= largestRealCellCount * 0.28;
+              const isTooLinear =
+                metrics.aspectRatio > 7 &&
+                metrics.fillRatio < 0.32 &&
+                component.realCellCount < largestRealCellCount * 0.35;
+              const isTooSparse =
+                metrics.fillRatio < 0.12 &&
+                component.realCellCount < largestRealCellCount * 0.2;
+              const isFlatHighStructure =
+                metrics.topBandRatio > 0.72 &&
+                metrics.heightSpread < 0.55 &&
+                component.peakHeight > 0.8 &&
+                component.realCellCount < largestRealCellCount * 0.5;
+              const isSingleLinearPatch =
+                metrics.aspectRatio > 3.5 &&
+                metrics.fillRatio < 0.45 &&
+                metrics.heightSpread < 0.5 &&
+                component.realCellCount < largestRealCellCount * 0.6;
+              return (
+                metrics.score >= bestScore * 0.14 &&
+                (isMeaningfulMass || isStrongPeak) &&
+                hasPileSurface &&
+                !isTooLinear &&
+                !isTooSparse &&
+                !isFlatHighStructure &&
+                !isSingleLinearPatch
+              );
+            });
+            if (significantComponents.length === 0 && components.length > 0) {
+              significantComponents.push(components[0]);
+            }
+            significantComponents.prunedNarrowCells = prunedNarrowCells;
+            significantComponents.prunedUnsupportedCells = prunedUnsupportedCells;
+            significantComponents.filledGapCells = filledGapCells;
+            significantComponents.footprintPrunedCells = footprintPrunedCells;
+            significantComponents.footprintFilledCells = footprintFilledCells;
+            significantComponents.completedSurfaceCells = completedSurfaceCells;
+            significantComponents.protrusionRemovedCells = protrusionRemovedCells;
+            significantComponents.protrusionRemovedComponents = protrusionRemovedComponents;
+            significantComponents.debugHeightMapCells = debugHeightMapCells;
+            significantComponents.debugFootprintCells = debugFootprintCells;
+            significantComponents.debugProtrusionOutlierCells = debugProtrusionOutlierCells;
+            return significantComponents;
+          }
+          components.prunedNarrowCells = prunedNarrowCells;
+          components.prunedUnsupportedCells = prunedUnsupportedCells;
+          components.filledGapCells = filledGapCells;
+          components.footprintPrunedCells = footprintPrunedCells;
+          components.footprintFilledCells = footprintFilledCells;
+          components.completedSurfaceCells = completedSurfaceCells;
+          components.protrusionRemovedCells = protrusionRemovedCells;
+          components.protrusionRemovedComponents = protrusionRemovedComponents;
+          components.debugHeightMapCells = debugHeightMapCells;
+          components.debugFootprintCells = debugFootprintCells;
+          components.debugProtrusionOutlierCells = debugProtrusionOutlierCells;
           return components;
         }
 
@@ -1514,9 +3307,40 @@
         let maxGx = Number.NEGATIVE_INFINITY;
         let minGy = Number.POSITIVE_INFINITY;
         let maxGy = Number.NEGATIVE_INFINITY;
+        let totalPrunedNarrowCells = 0;
+        let totalPrunedUnsupportedCells = 0;
+        let totalFilledGapCells = 0;
+        let totalFootprintPrunedCells = 0;
+        let totalFootprintFilledCells = 0;
+        let totalCompletedSurfaceCells = 0;
+        let totalProtrusionRemovedCells = 0;
+        let totalProtrusionRemovedComponents = 0;
+        const debugHeightMapCells = new Set();
+        const debugFootprintCells = new Set();
+        const debugProtrusionOutlierCells = new Set();
+
+        function mergeCellSet(target, source) {
+          if (!source) {
+            return;
+          }
+          for (const key of source) {
+            target.add(key);
+          }
+        }
 
         for (const searchRegion of searchRegions) {
-          const components = detectPilesInRegion(searchRegion) || [];
+          const components = detectObjectsInRegion(searchRegion) || [];
+          totalPrunedNarrowCells += components.prunedNarrowCells || 0;
+          totalPrunedUnsupportedCells += components.prunedUnsupportedCells || 0;
+          totalFilledGapCells += components.filledGapCells || 0;
+          totalFootprintPrunedCells += components.footprintPrunedCells || 0;
+          totalFootprintFilledCells += components.footprintFilledCells || 0;
+          totalCompletedSurfaceCells += components.completedSurfaceCells || 0;
+          totalProtrusionRemovedCells += components.protrusionRemovedCells || 0;
+          totalProtrusionRemovedComponents += components.protrusionRemovedComponents || 0;
+          mergeCellSet(debugHeightMapCells, components.debugHeightMapCells);
+          mergeCellSet(debugFootprintCells, components.debugFootprintCells);
+          mergeCellSet(debugProtrusionOutlierCells, components.debugProtrusionOutlierCells);
           if (components.length === 0) {
             continue;
           }
@@ -1537,21 +3361,33 @@
         if (selectedComponents.length === 0) {
           setOperationStatus(
             rois.length > 0
-              ? "Auto pile failed: no large connected coal region found inside selected ROIs"
-              : "Auto pile failed: no large connected coal region found",
+              ? `Cluster failed: no above-ground ${objectLabel} region found inside selected ROIs`
+              : `Cluster failed: no above-ground ${objectLabel} region found`,
             true,
           );
           return;
         }
 
-        pushUndoState("Auto pile");
+        pushUndoState("Cluster");
+        const debugStages =
+          objectType === "stockpile"
+            ? [
+                { name: "height map", cells: debugHeightMapCells },
+                { name: "footprint", cells: debugFootprintCells },
+                { name: "protrusion outlier", cells: debugProtrusionOutlierCells },
+                { name: "final", cells: selectedCells },
+              ]
+            : [];
         pileMask = {
           cells: selectedCells,
           gridSize: autoPileGridSize,
           minHeight: autoPileMinHeight,
+          objectType,
           searchRois: rois.length > 0 ? cloneRois(rois) : [],
+          debugStages,
           components: selectedComponents.map((component) => ({
             keys: new Set(component.keys),
+            heightCells: component.heightCells ? new Map(component.heightCells) : null,
             searchRoi: cloneRoi(component.searchRoi),
             peakHeight: component.peakHeight,
           })),
@@ -1566,28 +3402,33 @@
         roiDraftPoints = [];
         roiSelectionActive = false;
         volumeCalculationActive = false;
-        showFilteredRegion = true;
+        showFilteredRegion = false;
+        stockpileDebugActive = false;
+        stockpileDebugStageIndex = 0;
         selectRoiButton.classList.remove("active");
         calculateVolumeButton.classList.remove("active");
         volumeDisplay.textContent = "Volume: -- m³";
         const searchText = rois.length > 0 ? ` within ${rois.length} ROI${rois.length > 1 ? "s" : ""}` : "";
+        const stockpileCleanupText =
+          objectType === "stockpile"
+            ? `; height_map=2.5D; protrusion_removed=${totalProtrusionRemovedCells.toLocaleString()} cells/${totalProtrusionRemovedComponents.toLocaleString()} components; footprint_pruned=${totalFootprintPrunedCells.toLocaleString()}; footprint_filled=${totalFootprintFilledCells.toLocaleString()}; completed_surface=${totalCompletedSurfaceCells.toLocaleString()}; pruned_narrow=${totalPrunedNarrowCells.toLocaleString()}; pruned_isolated=${totalPrunedUnsupportedCells.toLocaleString()}; filled_gaps=${totalFilledGapCells.toLocaleString()}`
+            : "";
         roiStatusText =
-          `Auto pile${searchText}: ${selectedCells.size.toLocaleString()} cells; ` +
-          `${selectedComponents.length} pile${selectedComponents.length > 1 ? "s" : ""}; peak_height=${peakHeight.toFixed(2)}m`;
+          `Cluster ${objectLabel}${searchText}: ${selectedCells.size.toLocaleString()} cells; ` +
+          `${selectedComponents.length} object${selectedComponents.length > 1 ? "s" : ""}; peak_height=${peakHeight.toFixed(2)}m${stockpileCleanupText}`;
         updateCalibrationDisplay();
         updateDisplayedPoints();
         sendCalibrationToServer(false);
+        updateCalculateButtonState();
+        updateDebugClusterButton();
         setOperationStatus(
-          `Auto pile succeeded${searchText}: ${selectedCells.size.toLocaleString()} cells selected`,
+          `Cluster succeeded for ${objectLabel}${searchText}: selected object points are shown in red${stockpileCleanupText}`,
         );
       }
 
       function computeBrowserVolume(force) {
         void force;
-        if (!volumeCalculationActive || (rois.length === 0 && !roi && !pileMask) || latestPoints.length === 0) {
-          return;
-        }
-        if (sourceMode !== "static" && !pileMask && rois.length === 0 && !(roi && roi.points)) {
+        if (!volumeCalculationActive || !pileMask || latestPoints.length === 0) {
           return;
         }
 
@@ -1596,11 +3437,11 @@
           for (let i = 0; i < latestPoints.length; i += 3) {
             const x = latestPoints[i];
             const y = latestPoints[i + 1];
-            if (!containsPoint(x, y)) {
+            const z = latestPoints[i + 2];
+            if (!containsPoint(x, y, z) || pointInExclude(x, y, z)) {
               continue;
             }
 
-            const z = latestPoints[i + 2];
             const height = groundPlane.a * x + groundPlane.b * y + groundPlane.c * z + groundPlane.d;
             if (height <= staticVolumeMinHeight) {
               continue;
@@ -1618,13 +3459,9 @@
             }
           }
 
-          let cells = new Map();
+          const cells = new Map();
           for (const [key, heights] of cellHeights) {
             cells.set(key, robustHeightFromValues(heights));
-          }
-          if (limitPileHeight) {
-            pruneConveyorLikeCells(cells, (height) => height);
-            cells = clampCellsToFittedSideSurface(cells);
           }
 
           const clampedCells = new Map();
@@ -1642,7 +3479,7 @@
                 }
               }
             }
-            if (neighborHeights.length >= 3) {
+            if (!limitPileHeight && neighborHeights.length >= 3) {
               const localHeight = robustHeightFromValues(neighborHeights, 0.5);
               clampedCells.set(key, Math.min(height, localHeight + maxSurfaceStep));
             } else {
@@ -1657,44 +3494,67 @@
           return { name, volume, cells: clampedCells.size };
         }
 
+        function computeHeightMapVolume(name, heightCells, gridSize, limitPileHeight) {
+          let volume = 0;
+          let cells = 0;
+          for (const [key, height] of heightCells) {
+            if (!Number.isFinite(height) || height <= staticVolumeMinHeight) {
+              continue;
+            }
+            if (limitPileHeight && height > autoPileMaxHeight) {
+              continue;
+            }
+            const { gx, gy } = parseGridKey(key);
+            const x = (gx + 0.5) * gridSize;
+            const y = (gy + 0.5) * gridSize;
+            if (pointColumnInExclude(x, y)) {
+              continue;
+            }
+            volume += height * gridSize * gridSize;
+            cells++;
+          }
+          return { name, volume, cells };
+        }
+
         let volumeParts = [];
-        if (pileMask && pileMask.components && pileMask.components.length > 0) {
-          volumeParts = pileMask.components.map((component, index) =>
-            computeVolumeForRegion(
-              `Auto pile ${index + 1}`,
+        const clusteredObjectLabel = pileMask && pileMask.objectType === "box" ? "Box object" : "Stockpile";
+        const limitClusterHeight = !pileMask || pileMask.objectType !== "box";
+        if (pileMask.components && pileMask.components.length > 0) {
+          volumeParts = pileMask.components.map((component, index) => {
+            if (pileMask.objectType === "stockpile" && component.heightCells) {
+              return computeHeightMapVolume(
+                `${clusteredObjectLabel} ${index + 1}`,
+                component.heightCells,
+                pileMask.gridSize || autoPileGridSize,
+                limitClusterHeight,
+              );
+            }
+            return computeVolumeForRegion(
+              `${clusteredObjectLabel} ${index + 1}`,
               (x, y) =>
                 component.keys.has(pileCellKey(x, y)) &&
                 (!component.searchRoi || pointInRoiShape(component.searchRoi, x, y)),
-              true,
-            ),
-          );
-        } else if (pileMask) {
+              limitClusterHeight,
+            );
+          });
+        } else {
           volumeParts = [
             computeVolumeForRegion(
-              "Auto pile",
-              (x, y) => pointInActiveRegion(x, y),
-              true,
+              clusteredObjectLabel,
+              (x, y, z) => pointInActiveRegion(x, y, z),
+              limitClusterHeight,
             ),
           ];
-        } else {
-          const regions = rois.length > 0 ? rois : roi ? [roi] : [];
-          volumeParts = regions.map((region, index) =>
-            computeVolumeForRegion(`ROI ${index + 1}`, (x, y) => pointInRoiShape(region, x, y), false),
-          );
         }
 
         const volume = volumeParts.reduce((sum, part) => sum + part.volume, 0);
         const totalCells = volumeParts.reduce((sum, part) => sum + part.cells, 0);
-        const sourceText = pileMask
-          ? "auto pile browser"
-          : rois.length > 0 || (roi && roi.points)
-            ? "ROI polygon browser"
-            : "static";
-        volumeDisplay.textContent = `Volume: ${volume.toFixed(2)} m³ · ${totalCells.toLocaleString()} cells · ${sourceText}`;
+        const sourceText = "cluster browser";
+        volumeDisplay.textContent = `Volume: ${volume.toFixed(3)} m³ · ${totalCells.toLocaleString()} cells · ${sourceText}`;
         const details = volumeParts
-          .map((part) => `${part.name}: ${part.volume.toFixed(2)} m³ (${part.cells.toLocaleString()} cells)`)
+          .map((part) => `${part.name}: ${part.volume.toFixed(3)} m³ (${part.cells.toLocaleString()} cells)`)
           .join(" · ");
-        setOperationStatus(`Browser volume calculation succeeded: total ${volume.toFixed(2)} m³ · ${details}`);
+        setOperationStatus(`Browser volume calculation succeeded: total ${volume.toFixed(3)} m³ · ${details}`);
       }
 
       function quantile(sortedValues, fraction) {
@@ -1773,40 +3633,115 @@
       function filterStaticWarehouseStructure(points) {
         const total = Math.floor(points.length / 3);
         const roofCutZ = estimateRoofCutZ(points);
-        const sampleTarget = 600000;
+        const sampleTarget = 800000;
         const stride = Math.max(1, Math.floor(total / sampleTarget));
         const xs = [];
         const ys = [];
         const zs = [];
+        const samplePoints = [];
         for (let index = 0; index < total; index += stride) {
           const offset = index * 3;
-          xs.push(points[offset]);
-          ys.push(points[offset + 1]);
-          zs.push(points[offset + 2]);
+          const x = points[offset];
+          const y = points[offset + 1];
+          const z = points[offset + 2];
+          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            continue;
+          }
+          xs.push(x);
+          ys.push(y);
+          zs.push(z);
+          samplePoints.push({ x, y, z });
         }
         xs.sort((a, b) => a - b);
         ys.sort((a, b) => a - b);
         zs.sort((a, b) => a - b);
-        const xMin = quantile(xs, 0.01);
-        const xMax = quantile(xs, 0.99);
-        const yMin = quantile(ys, 0.01);
-        const yMax = quantile(ys, 0.99);
-        const lowZ = quantile(zs, 0.05);
-        const wallMargin = 1.0;
-        const wallMinZ = lowZ + 0.4;
+        const xMin = quantile(xs, 0.005);
+        const xMax = quantile(xs, 0.995);
+        const yMin = quantile(ys, 0.005);
+        const yMax = quantile(ys, 0.995);
+
+        const groundCellSize = 0.5;
+        const lowCells = new Map();
+        for (const point of samplePoints) {
+          if (point.z > roofCutZ) {
+            continue;
+          }
+          const key = `${Math.floor(point.x / groundCellSize)},${Math.floor(point.y / groundCellSize)}`;
+          const existing = lowCells.get(key);
+          if (!existing || point.z < existing.z) {
+            lowCells.set(key, point);
+          }
+        }
+
+        const lowCellPoints = [...lowCells.values()].sort((a, b) => a.z - b.z);
+        const groundCandidates = lowCellPoints.slice(0, Math.max(120, Math.floor(lowCellPoints.length * 0.65)));
+        let fittedGroundPlane = fitGroundPlaneRansac(groundCandidates, {
+          minSamples: 40,
+          iterations: 260,
+          threshold: 0.18,
+          maxCandidates: 2200,
+        });
+        if (!fittedGroundPlane) {
+          fittedGroundPlane = { a: 0, b: 0, c: 1, d: -quantile(zs, 0.05) };
+        }
+
+        const wallCellSize = 0.5;
+        const wallStats = new Map();
+        for (const point of samplePoints) {
+          if (point.z > roofCutZ + 0.5) {
+            continue;
+          }
+          const key = `${Math.floor(point.x / wallCellSize)},${Math.floor(point.y / wallCellSize)}`;
+          const stat = wallStats.get(key);
+          if (stat) {
+            stat.count++;
+            stat.minZ = Math.min(stat.minZ, point.z);
+            stat.maxZ = Math.max(stat.maxZ, point.z);
+          } else {
+            wallStats.set(key, { count: 1, minZ: point.z, maxZ: point.z });
+          }
+        }
+
+        const wallCells = new Set();
+        for (const [key, stat] of wallStats) {
+          const span = stat.maxZ - stat.minZ;
+          const reachesRoof = stat.maxZ > roofCutZ - 2.0;
+          if (stat.count >= 12 && span > 4.0 && reachesRoof) {
+            const [gx, gy] = key.split(",").map(Number);
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                wallCells.add(`${gx + dx},${gy + dy}`);
+              }
+            }
+          }
+        }
+
+        const wallMargin = 1.2;
+        const wallMinHeight = 0.25;
         let kept = 0;
+        let roofRemoved = 0;
+        let wallRemoved = 0;
         for (let i = 0; i < points.length; i += 3) {
           const x = points[i];
           const y = points[i + 1];
           const z = points[i + 2];
+          if (z > roofCutZ) {
+            roofRemoved++;
+            continue;
+          }
+          const height = heightAbovePlane(fittedGroundPlane, x, y, z);
           const nearOuterWall =
             x <= xMin + wallMargin ||
             x >= xMax - wallMargin ||
             y <= yMin + wallMargin ||
             y >= yMax - wallMargin;
-          if (z <= roofCutZ && !(nearOuterWall && z > wallMinZ)) {
-            kept++;
+          const wallKey = `${Math.floor(x / wallCellSize)},${Math.floor(y / wallCellSize)}`;
+          const isWall = (nearOuterWall || wallCells.has(wallKey)) && height > wallMinHeight;
+          if (isWall) {
+            wallRemoved++;
+            continue;
           }
+          kept++;
         }
 
         const filtered = new Float32Array(kept * 3);
@@ -1815,12 +3750,17 @@
           const x = points[i];
           const y = points[i + 1];
           const z = points[i + 2];
+          if (z > roofCutZ) {
+            continue;
+          }
+          const height = heightAbovePlane(fittedGroundPlane, x, y, z);
           const nearOuterWall =
             x <= xMin + wallMargin ||
             x >= xMax - wallMargin ||
             y <= yMin + wallMargin ||
             y >= yMax - wallMargin;
-          if (z > roofCutZ || (nearOuterWall && z > wallMinZ)) {
+          const wallKey = `${Math.floor(x / wallCellSize)},${Math.floor(y / wallCellSize)}`;
+          if ((nearOuterWall || wallCells.has(wallKey)) && height > wallMinHeight) {
             continue;
           }
           filtered[out++] = x;
@@ -1833,8 +3773,11 @@
           originalCount: total,
           filteredCount: kept,
           removedCount: total - kept,
+          roofRemoved,
+          wallRemoved,
           roofCutZ,
-          wallBounds: { xMin, xMax, yMin, yMax, wallMargin, wallMinZ },
+          groundPlane: fittedGroundPlane,
+          wallBounds: { xMin, xMax, yMin, yMax, wallMargin, wallMinHeight, wallCells: wallCells.size },
         };
       }
 
@@ -1947,17 +3890,27 @@
         volumeDisplay.textContent = "Volume: -- m³";
         roi = null;
         rois = [];
+        excludeCellMasks = [];
         pileMask = null;
+        stockpileDebugActive = false;
+        stockpileDebugStageIndex = 0;
         roiFirstCorner = null;
         roiDraftPoints = [];
+        excludeDraftScreenPoints = [];
+        excludeDraftClosed = false;
+        excludeScreenPolygons = [];
         roiSelectionActive = false;
+        roiSelectionMode = "include";
         roiStatusText = "ROI: none";
         groundPlane = { a: 0, b: 0, c: 1, d: 0 };
         groundFitted = false;
         volumeCalculationActive = false;
         showFilteredRegion = false;
         selectRoiButton.classList.remove("active");
+        selectExcludeButton.classList.remove("active");
         calculateVolumeButton.classList.remove("active");
+        updateCalculateButtonState();
+        updateDebugClusterButton();
         updateCalibrationDisplay();
 
         try {
@@ -1967,8 +3920,9 @@
           liveReceiveActive = false;
           closeCurrentSocket();
           staticRawPoints = result.points;
+          staticProcessedPoints = result.points;
           staticStructureFiltered = false;
-          latestPoints = result.points;
+          latestPoints = orientPointCloud(staticProcessedPoints);
           staticOriginalPointCount = result.pointCount;
           sourceTotalPointCount = result.pointCount;
           updateDisplayedPoints();
@@ -2041,7 +3995,7 @@
           liveReceiveActive
             ? latestPoints.length > 0
               ? `Live receive active: ${sourceTotalPointCount.toLocaleString()} window points`
-              : `Live receive active: waiting for ${receivingStatusText(currentPointCloudSource().name).replace(/^Receiving /, "")}`
+              : "Live receive active: waiting for point cloud frames"
             : "Live receive stopped; current point cloud kept",
         );
       }
@@ -2079,24 +4033,33 @@
           const filtered = applyStructureFilterToPoints(inputPoints);
           pushUndoState("Filter structure", undoState);
           if (isStatic) {
-            latestPoints = filtered.points;
+            setStaticSourcePoints(filtered.points);
             staticStructureFiltered = true;
             staticOriginalPointCount = filtered.originalCount;
           } else {
             liveStructureFilterActive = true;
-            latestLivePoints = filtered.points;
-            latestPoints = latestLivePoints;
+            setLiveSourcePoints(filtered.points);
+          }
+          if (filtered.groundPlane) {
+            groundPlane = filtered.groundPlane;
+            groundFitted = true;
           }
           sourceTotalPointCount = filtered.filteredCount;
           updateDisplayedPoints();
           statusDot.className = "dot connected";
           statusText.textContent = "Connected";
+          const groundInliers = Number(filtered.groundPlane.ransacInliers || 0);
+          const groundCandidates = Number(filtered.groundPlane.ransacCandidates || 0);
+          const groundCoverage =
+            groundCandidates > 0 ? `; ground_ransac=${groundInliers.toLocaleString()}/${groundCandidates.toLocaleString()}` : "";
           roiStatusText =
-            `${isStatic ? "Static" : "Live"} structure filter active: kept ${filtered.filteredCount.toLocaleString()}` +
+            `${isStatic ? "Static" : "Live"} structure filter + ground fit active: kept ${filtered.filteredCount.toLocaleString()}` +
             ` / ${filtered.originalCount.toLocaleString()} points; roof_cut_z=${filtered.roofCutZ.toFixed(2)};` +
-            ` wall_margin=${filtered.wallBounds.wallMargin.toFixed(1)}m`;
+            ` wall_cells=${filtered.wallBounds.wallCells.toLocaleString()};` +
+            ` ground_method=ransac; ground=(${groundPlane.a.toFixed(4)}, ${groundPlane.b.toFixed(4)}, ${groundPlane.c.toFixed(4)}, ${groundPlane.d.toFixed(4)})${groundCoverage}`;
           setOperationStatus(
-            `${isStatic ? "Static" : "Live"} structure filter succeeded: removed ${filtered.removedCount.toLocaleString()} roof/wall points`,
+            `${isStatic ? "Static" : "Live"} structure filter succeeded: removed ${filtered.removedCount.toLocaleString()} points ` +
+              `(roof ${filtered.roofRemoved.toLocaleString()}, wall ${filtered.wallRemoved.toLocaleString()}); ground fitted`,
           );
           updateCalibrationDisplay();
         } catch (error) {
@@ -2109,18 +4072,22 @@
       function projectPoint(matrix, x, y, z) {
         const clipX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
         const clipY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+        const clipZ = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
         const clipW = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
         if (clipW <= 0.001) {
           return null;
         }
         const ndcX = clipX / clipW;
         const ndcY = clipY / clipW;
+        const ndcZ = clipZ / clipW;
         if (ndcX < -1.1 || ndcX > 1.1 || ndcY < -1.1 || ndcY > 1.1) {
           return null;
         }
         return {
           x: ((ndcX + 1) * canvas.clientWidth) / 2,
           y: ((1 - ndcY) * canvas.clientHeight) / 2,
+          depth: clipW,
+          ndcZ,
         };
       }
 
@@ -2137,8 +4104,38 @@
           return [];
         }
         return region.points
-          .map((point) => projectPoint(matrix, point.x, point.y, 0))
+          .map((point) => projectPoint(matrix, point.x, point.y, roiBaseZAt(point.x, point.y)))
           .filter(Boolean);
+      }
+
+      function orthogonalRoiPoints(points) {
+        if (points.length < 3) {
+          return points.map((point) => ({ ...point }));
+        }
+        const p1 = points[0];
+        const p2 = points[1];
+        const p3 = points[2];
+        const edgeX = p2.x - p1.x;
+        const edgeY = p2.y - p1.y;
+        const edgeLength = Math.hypot(edgeX, edgeY);
+        if (edgeLength < 1e-6) {
+          return points.map((point) => ({ ...point }));
+        }
+
+        const ux = edgeX / edgeLength;
+        const uy = edgeY / edgeLength;
+        const nx = -uy;
+        const ny = ux;
+        const sideOffset = (p3.x - p2.x) * nx + (p3.y - p2.y) * ny;
+        const offsetX = nx * sideOffset;
+        const offsetY = ny * sideOffset;
+        const z = pointCloudMeanZ();
+        return [
+          { x: p1.x, y: p1.y, z },
+          { x: p2.x, y: p2.y, z },
+          { x: p2.x + offsetX, y: p2.y + offsetY, z },
+          { x: p1.x + offsetX, y: p1.y + offsetY, z },
+        ];
       }
 
       function drawRoiShape(points, color, label) {
@@ -2148,20 +4145,81 @@
 
         if (points.length > 1) {
           const linePoints = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+          const polylinePoints =
+            points.length === 4 ? `${linePoints} ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}` : linePoints;
           roiOverlay.appendChild(
             svgElement("polyline", {
-              points: points.length === 4 ? `${linePoints} ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}` : linePoints,
-              fill: points.length === 4 ? color : "none",
-              "fill-opacity": points.length === 4 ? "0.08" : "0",
-              stroke: color,
-              "stroke-width": 2,
+              points: polylinePoints,
+              fill: "none",
+              stroke: "#020617",
+              "stroke-width": 6,
               "stroke-linejoin": "round",
+              "stroke-linecap": "round",
+              "stroke-opacity": 0.88,
+            }),
+          );
+          roiOverlay.appendChild(
+            svgElement("polyline", {
+              points: polylinePoints,
+              fill: points.length === 4 ? color : "none",
+              "fill-opacity": points.length === 4 ? "0.14" : "0",
+              stroke: color,
+              "stroke-width": 3,
+              "stroke-linejoin": "round",
+              "stroke-linecap": "round",
             }),
           );
         }
 
         points.forEach((point, index) => {
-          roiOverlay.appendChild(svgElement("circle", { cx: point.x, cy: point.y, r: 4, fill: color, stroke: "#0b0f14", "stroke-width": 1.5 }));
+          roiOverlay.appendChild(svgElement("circle", { cx: point.x, cy: point.y, r: 6, fill: "#020617", stroke: "#f8fafc", "stroke-width": 1 }));
+          roiOverlay.appendChild(svgElement("circle", { cx: point.x, cy: point.y, r: 4, fill: color, stroke: "#020617", "stroke-width": 1.5 }));
+          roiOverlay.appendChild(
+            svgElement("text", {
+              x: point.x + 7,
+              y: point.y - 7,
+              fill: "#f8fafc",
+              "font-size": 11,
+              "font-family": "ui-sans-serif, system-ui, sans-serif",
+            }),
+          ).textContent = label ? `${label}.${index + 1}` : `${index + 1}`;
+        });
+      }
+
+      function drawScreenPolygon(points, color, closed, label) {
+        if (points.length === 0) {
+          return;
+        }
+        if (points.length > 1) {
+          const linePoints = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+          const polylinePoints = closed
+            ? `${linePoints} ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`
+            : linePoints;
+          roiOverlay.appendChild(
+            svgElement("polyline", {
+              points: polylinePoints,
+              fill: closed ? color : "none",
+              "fill-opacity": closed ? "0.12" : "0",
+              stroke: "#020617",
+              "stroke-width": 6,
+              "stroke-linejoin": "round",
+              "stroke-linecap": "round",
+            }),
+          );
+          roiOverlay.appendChild(
+            svgElement("polyline", {
+              points: polylinePoints,
+              fill: closed ? color : "none",
+              "fill-opacity": closed ? "0.12" : "0",
+              stroke: color,
+              "stroke-width": 3,
+              "stroke-linejoin": "round",
+              "stroke-linecap": "round",
+            }),
+          );
+        }
+        points.forEach((point, index) => {
+          roiOverlay.appendChild(svgElement("circle", { cx: point.x, cy: point.y, r: 5, fill: color, stroke: "#020617", "stroke-width": 1.5 }));
           roiOverlay.appendChild(
             svgElement("text", {
               x: point.x + 7,
@@ -2179,44 +4237,24 @@
         roiOverlay.replaceChildren();
         const matrix = viewMatrix();
         rois.forEach((region, index) => {
-          drawRoiShape(projectedRoiPoints(region, matrix), "#38bdf8", `R${index + 1}`);
+          drawRoiShape(projectedRoiPoints(region, matrix), "#ec4899", `R${index + 1}`);
         });
+        excludeScreenPolygons.forEach((polygon, index) => {
+          drawScreenPolygon(polygon, "#f97316", true, `E${index + 1}`);
+        });
+        if (excludeDraftScreenPoints.length > 0) {
+          drawScreenPolygon(excludeDraftScreenPoints, "#f97316", excludeDraftClosed, "exclude");
+        }
         if (roiDraftPoints.length > 0) {
-          drawRoiShape(projectedRoiPoints({ points: roiDraftPoints }, matrix), "#fbbf24", "new");
+          drawRoiShape(
+            projectedRoiPoints({ points: orthogonalRoiPoints(roiDraftPoints) }, matrix),
+            "#22c55e",
+            "new",
+          );
         }
       }
 
-      function nearestPointOnScreen(clientX, clientY) {
-        const rect = canvas.getBoundingClientRect();
-        const targetX = clientX - rect.left;
-        const targetY = clientY - rect.top;
-        const totalPoints = Math.floor(displayedPoints.length / 3);
-        const stride = Math.max(1, Math.floor(totalPoints / 80000));
-        const matrix = viewMatrix();
-        let best = null;
-        let bestDistanceSq = 24 * 24;
-
-        for (let i = 0; i < totalPoints; i += stride) {
-          const offset = i * 3;
-          const x = displayedPoints[offset];
-          const y = displayedPoints[offset + 1];
-          const z = displayedPoints[offset + 2];
-          const projected = projectPoint(matrix, x, y, z);
-          if (!projected) {
-            continue;
-          }
-          const dx = projected.x - targetX;
-          const dy = projected.y - targetY;
-          const distanceSq = dx * dx + dy * dy;
-          if (distanceSq < bestDistanceSq) {
-            bestDistanceSq = distanceSq;
-            best = { x, y, z };
-          }
-        }
-        return best;
-      }
-
-      function screenPointOnXYPlane(clientX, clientY) {
+      function screenPointOnRoiBase(clientX, clientY) {
         const inverseMatrix = invertMatrix4(viewMatrix());
         if (!inverseMatrix) {
           return null;
@@ -2235,40 +4273,122 @@
         if (Math.abs(dir.z) < 1e-9) {
           return null;
         }
-
-        const t = -nearPoint.z / dir.z;
+        const zPlane = pointCloudMeanZ();
+        const t = (zPlane - nearPoint.z) / dir.z;
         if (!Number.isFinite(t) || t < 0) {
           return null;
         }
+        const x = nearPoint.x + dir.x * t;
+        const y = nearPoint.y + dir.y * t;
         return {
-          x: nearPoint.x + dir.x * t,
-          y: nearPoint.y + dir.y * t,
-          z: 0,
+          x,
+          y,
+          z: zPlane,
         };
       }
 
+      function screenOverlayPoint(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+        };
+      }
+
+      function addScreenExcludePoint(event) {
+        if (excludeDraftClosed) {
+          setOperationStatus("Exclude polygon is closed: press Enter to confirm or Undo to reopen", true);
+          return;
+        }
+        excludeDraftScreenPoints.push(screenOverlayPoint(event));
+        roiStatusText =
+          `Exclude: ${excludeDraftScreenPoints.length} screen point${excludeDraftScreenPoints.length > 1 ? "s" : ""}; ` +
+          "right-click to close, Enter to confirm";
+        setOperationStatus(
+          `Exclude screen point ${excludeDraftScreenPoints.length} selected; right-click to close polygon, then press Enter`,
+        );
+        updateCalibrationDisplay();
+        updateRoiOverlay();
+      }
+
+      function closeScreenExcludeSelection() {
+        if (excludeDraftScreenPoints.length < 3) {
+          setOperationStatus("Exclude close failed: select at least 3 screen points", true);
+          return;
+        }
+        excludeDraftClosed = true;
+        roiStatusText =
+          `Exclude: polygon closed with ${excludeDraftScreenPoints.length} screen points; press Enter to confirm`;
+        setOperationStatus("Exclude polygon closed; press Enter to confirm selected point-cloud voxels");
+        updateCalibrationDisplay();
+        updateRoiOverlay();
+      }
+
+      function finishScreenExcludeSelection() {
+        if (excludeDraftScreenPoints.length < 3) {
+          setOperationStatus("Exclude failed: select at least 3 screen points before pressing Enter", true);
+          return;
+        }
+        if (!excludeDraftClosed) {
+          setOperationStatus("Exclude failed: right-click to close the polygon before pressing Enter", true);
+          return;
+        }
+        const mask = buildScreenExcludeMask(excludeDraftScreenPoints);
+        if (mask.size === 0) {
+          setOperationStatus("Exclude failed: no point-cloud voxels inside the screen polygon", true);
+          return;
+        }
+        pushUndoState("Exclude");
+        excludeCellMasks.push(mask);
+        excludeDraftScreenPoints = [];
+        excludeDraftClosed = false;
+        excludeScreenPolygons = [];
+        roiSelectionActive = false;
+        roiSelectionMode = "include";
+        selectExcludeButton.classList.remove("active");
+        volumeCalculationActive = false;
+        showFilteredRegion = false;
+        calculateVolumeButton.classList.remove("active");
+        volumeDisplay.textContent = "Volume: -- m³";
+        roiStatusText = `Exclude: ${excludeCellMasks.length} mask${excludeCellMasks.length > 1 ? "s" : ""}; latest=${mask.size.toLocaleString()} voxels`;
+        updateDisplayedPoints();
+        updateCalibrationDisplay();
+        setOperationStatus(`Exclude mask added: selected voxels removed from cluster selection and volume calculation`);
+      }
+
       function selectRoiCorner(event) {
-        const point = screenPointOnXYPlane(event.clientX, event.clientY);
+        const point = screenPointOnRoiBase(event.clientX, event.clientY);
         if (!point) {
-          roiStatusText = "ROI: no XY-plane intersection";
-          setOperationStatus("ROI point selection failed: click ray did not intersect the z=0 XY plane", true);
+          roiStatusText = "ROI: no mean-Z plane intersection";
+          setOperationStatus("ROI point selection failed: click ray did not intersect the point cloud mean-Z plane", true);
           updateCalibrationDisplay();
           return;
         }
         roiDraftPoints.push(point);
         roiFirstCorner = roiDraftPoints[0] || null;
-        if (roiDraftPoints.length < 4) {
+        if (roiDraftPoints.length < roiRequiredClicks) {
           roiStatusText =
-            `ROI: point ${roiDraftPoints.length}/4 selected (${formatPoint(point)}); ` +
-            `select point ${roiDraftPoints.length + 1}/4`;
-          setOperationStatus(`ROI point ${roiDraftPoints.length}/4 selected: ${formatPoint(point)}`);
+            `ROI: point ${roiDraftPoints.length}/${roiRequiredClicks} selected (${formatPoint(point)}); ` +
+            `select point ${roiDraftPoints.length + 1}/${roiRequiredClicks}`;
+          setOperationStatus(`ROI point ${roiDraftPoints.length}/${roiRequiredClicks} selected: ${formatPoint(point)}`);
           updateCalibrationDisplay();
           return;
         }
 
         pushUndoState("ROI");
         pileMask = null;
-        const points = roiDraftPoints.map((roiPoint) => ({ x: roiPoint.x, y: roiPoint.y, z: roiPoint.z }));
+        stockpileDebugActive = false;
+        stockpileDebugStageIndex = 0;
+        const points = orthogonalRoiPoints(roiDraftPoints);
+        const sideA = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+        const sideB = Math.hypot(points[2].x - points[1].x, points[2].y - points[1].y);
+        if (sideA < 1e-6 || sideB < 1e-6) {
+          roiDraftPoints.pop();
+          roiStatusText = "ROI: rectangle side is too short; select a different point";
+          setOperationStatus("ROI selection failed: rectangle side is too short", true);
+          updateCalibrationDisplay();
+          return;
+        }
         const xs = points.map((roiPoint) => roiPoint.x);
         const ys = points.map((roiPoint) => roiPoint.y);
         roi = {
@@ -2285,16 +4405,37 @@
         volumeCalculationActive = false;
         showFilteredRegion = false;
         selectRoiButton.classList.remove("active");
+        selectExcludeButton.classList.remove("active");
         calculateVolumeButton.classList.remove("active");
         roiStatusText =
-          `ROI: ${rois.length} area${rois.length > 1 ? "s" : ""}; latest 4 points selected; ` +
+          `ROI: ${rois.length} rectangle${rois.length > 1 ? "s" : ""}; right angles enforced; ` +
           points.map(formatPoint).join("; ");
         updateCalibrationDisplay();
         volumeDisplay.textContent = "Volume: -- m³";
         updateDisplayedPoints();
+        updateCalculateButtonState();
+        updateDebugClusterButton();
         setOperationStatus(
           `ROI ${rois.length} selected: full point cloud kept visible for adding more ROIs`,
         );
+      }
+
+      function updateRoiDraftStatus(messagePrefix = "ROI") {
+        roiFirstCorner = roiDraftPoints[0] || null;
+        const label = roiSelectionMode === "exclude" ? "Exclude" : "ROI";
+        if (roiDraftPoints.length === 0) {
+          roiStatusText = `${label}: select point 1/${roiRequiredClicks}`;
+          setOperationStatus(`${messagePrefix}: select point 1/${roiRequiredClicks}`);
+        } else {
+          const latestPoint = roiDraftPoints[roiDraftPoints.length - 1];
+          roiStatusText =
+            `${label}: point ${roiDraftPoints.length}/${roiRequiredClicks} selected (${formatPoint(latestPoint)}); ` +
+            `select point ${roiDraftPoints.length + 1}/${roiRequiredClicks}`;
+          setOperationStatus(
+            `${messagePrefix}: point ${roiDraftPoints.length}/${roiRequiredClicks} selected; select point ${roiDraftPoints.length + 1}/${roiRequiredClicks}`,
+          );
+        }
+        updateCalibrationDisplay();
       }
 
       function render(now) {
@@ -2305,6 +4446,9 @@
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.enableVertexAttribArray(positionLocation);
         gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, labelBuffer);
+        gl.enableVertexAttribArray(labelLocation);
+        gl.vertexAttribPointer(labelLocation, 1, gl.FLOAT, false, 0, 0);
         gl.uniformMatrix4fv(matrixLocation, false, viewMatrix());
         gl.uniform1f(pointSizeLocation, Number(pointSizeInput.value) * (window.devicePixelRatio || 1));
         gl.drawArrays(gl.POINTS, 0, pointCount);
@@ -2350,7 +4494,9 @@
             statusDot.className = "dot connected";
             statusText.textContent = liveReceiveActive ? `Connected: ${source.name}` : "Live idle";
           }
+          resolveSocketOpenWaiters(socket);
           sendStreamControl(liveReceiveActive);
+          sendPatchworkControl(patchworkRealtimeActive);
           sendCalibrationToServer();
           if (liveReceiveActive) {
             setOperationStatus(`Connected to ${source.name}; waiting for point cloud frames`);
@@ -2374,8 +4520,27 @@
                 const cells = Number(message.cells || 0);
                 const windowSeconds = Number(message.window_seconds || 0);
                 const windowText = windowSeconds > 0 ? ` · ${windowSeconds.toFixed(0)}s` : "";
-                volumeDisplay.textContent = `Volume: ${volume.toFixed(2)} m³ · ${cells.toLocaleString()} cells${windowText} · server`;
-                setOperationStatus(`Server volume updated: ${volume.toFixed(2)} m³`);
+                volumeDisplay.textContent = `Volume: ${volume.toFixed(3)} m³ · ${cells.toLocaleString()} cells${windowText} · server`;
+                setOperationStatus(`Server volume updated: ${volume.toFixed(3)} m³`);
+              } else if (message.type === "patchwork_result") {
+                const a = Number(message.ground_a);
+                const b = Number(message.ground_b);
+                const c = Number(message.ground_c);
+                const d = Number(message.ground_d);
+                if ([a, b, c, d].every(Number.isFinite)) {
+                  groundPlane = { a, b, c, d };
+                  groundFitted = true;
+                  pendingPatchworkBinary = true;
+                  updateCalibrationDisplay();
+                  const groundCount = Number(message.ground_points || 0);
+                  const nongroundCount = Number(message.nonground_points || 0);
+                  setOperationStatus(
+                    `Patchwork++ succeeded: blue ground points / yellow non-ground points (${groundCount.toLocaleString()} / ${nongroundCount.toLocaleString()})`,
+                  );
+                }
+              } else if (message.type === "patchwork_status") {
+                const text = String(message.message || "Patchwork++ failed");
+                setOperationStatus(text, message.level === "error");
               }
             } catch {
               return;
@@ -2383,6 +4548,50 @@
             return;
           }
           if (!(data instanceof ArrayBuffer) || data.byteLength === 0) {
+            return;
+          }
+          if (pendingPatchworkBinary) {
+            pendingPatchworkBinary = false;
+            const values = new Float32Array(data);
+            const pointTotal = Math.floor(values.length / 4);
+            const allPoints = new Float32Array(pointTotal * 3);
+            const allLabels = new Float32Array(pointTotal);
+            let nongroundCount = 0;
+            for (let index = 0; index < pointTotal; index++) {
+              const inOffset = index * 4;
+              const outOffset = index * 3;
+              allPoints[outOffset] = values[inOffset];
+              allPoints[outOffset + 1] = values[inOffset + 1];
+              allPoints[outOffset + 2] = values[inOffset + 2];
+              const label = values[inOffset + 3] > 0.5 ? 1 : 0;
+              allLabels[index] = label;
+              if (label > 0.5) {
+                nongroundCount++;
+              }
+            }
+
+            const nongroundPoints = new Float32Array(nongroundCount * 3);
+            let out = 0;
+            for (let index = 0; index < pointTotal; index++) {
+              if (allLabels[index] <= 0.5) {
+                continue;
+              }
+              const offset = index * 3;
+              nongroundPoints[out++] = allPoints[offset];
+              nongroundPoints[out++] = allPoints[offset + 1];
+              nongroundPoints[out++] = allPoints[offset + 2];
+            }
+
+            patchworkSegmentationActive = true;
+            segmentationDisplayPoints = allPoints;
+            segmentationDisplayLabels = allLabels;
+            latestPoints = nongroundPoints;
+            sourceTotalPointCount = nongroundCount;
+            roiStatusText = `Patchwork++: ${nongroundCount.toLocaleString()} nonground points available for ROI and Cluster`;
+            updateCalibrationDisplay();
+            updateDisplayedPoints();
+            updateSegmentationLegend();
+            computeBrowserVolume(true);
             return;
           }
           if (!liveReceiveActive) {
@@ -2394,25 +4603,31 @@
           receivedLiveFrameCount++;
           latestLiveRawPoints = new Float32Array(data);
           const liveInputPoints = appendLiveFrame(latestLiveRawPoints);
+          if (patchworkRealtimeActive) {
+            return;
+          }
+          if (patchworkSegmentationActive) {
+            patchworkSegmentationActive = false;
+            segmentationDisplayPoints = new Float32Array();
+            segmentationDisplayLabels = new Float32Array();
+            roiStatusText = "Patchwork++ result cleared: live sliding window resumed";
+            updateCalibrationDisplay();
+            updateSegmentationLegend();
+          }
           if (liveStructureFilterActive) {
             try {
-              latestLivePoints = applyStructureFilterToPoints(liveInputPoints).points;
+              setLiveSourcePoints(applyStructureFilterToPoints(liveInputPoints).points);
             } catch (error) {
               liveStructureFilterActive = false;
-              latestLivePoints = liveInputPoints;
+              setLiveSourcePoints(liveInputPoints);
               setOperationStatus(`Live structure filter disabled: ${error.message}`, true);
             }
           } else {
-            latestLivePoints = liveInputPoints;
+            setLiveSourcePoints(liveInputPoints);
           }
           if (sourceMode === "live") {
             latestPoints = latestLivePoints;
             updateDisplayedPoints();
-            const now = performance.now();
-            if (receivedLiveFrameCount === 1 || now - lastLiveReceiveStatusTime > 2000) {
-              setOperationStatus(receivingStatusText(source.name));
-              lastLiveReceiveStatusTime = now;
-            }
           }
         };
 
@@ -2420,6 +4635,7 @@
           if (sessionId !== liveSessionId) {
             return;
           }
+          rejectSocketOpenWaiters(new Error(`Connection closed for ${source.name}`));
           if (currentSocket === socket) {
             currentSocket = null;
           }
@@ -2439,6 +4655,7 @@
           if (sessionId !== liveSessionId || currentSocket !== socket) {
             return;
           }
+          rejectSocketOpenWaiters(new Error(`Connection error for ${source.name}`));
           if (sourceMode === "live") {
             statusDot.className = "dot error";
             statusText.textContent = liveReceiveActive ? "Connection error" : "Live idle";
@@ -2452,6 +4669,14 @@
 
       canvas.addEventListener("pointerdown", (event) => {
         if (roiSelectionActive) {
+          if (roiSelectionMode === "exclude") {
+            if (event.button === 2) {
+              closeScreenExcludeSelection();
+            } else {
+              addScreenExcludePoint(event);
+            }
+            return;
+          }
           selectRoiCorner(event);
           return;
         }
@@ -2488,6 +4713,14 @@
         event.preventDefault();
       });
 
+      window.addEventListener("keydown", (event) => {
+        if (!roiSelectionActive || roiSelectionMode !== "exclude" || event.key !== "Enter") {
+          return;
+        }
+        event.preventDefault();
+        finishScreenExcludeSelection();
+      });
+
       canvas.addEventListener(
         "wheel",
         (event) => {
@@ -2500,53 +4733,109 @@
       fitGroundButton.addEventListener("click", fitGroundPlane);
 
       selectRoiButton.addEventListener("click", () => {
-        roiSelectionActive = !roiSelectionActive;
+        const wasActive = roiSelectionActive && roiSelectionMode === "include";
+        roiSelectionActive = !wasActive;
+        roiSelectionMode = "include";
         roiFirstCorner = null;
         roiDraftPoints = [];
         selectRoiButton.classList.toggle("active", roiSelectionActive);
-        roiStatusText = roiSelectionActive ? "ROI: select point 1/4" : "ROI: selection canceled";
-        setOperationStatus(roiSelectionActive ? "ROI selection started: select point 1/4" : "ROI selection canceled");
+        selectExcludeButton.classList.remove("active");
+        roiStatusText = roiSelectionActive ? `ROI: select point 1/${roiRequiredClicks}` : "ROI: selection canceled";
+        setOperationStatus(
+          roiSelectionActive
+            ? `ROI rectangle selection started: select point 1/${roiRequiredClicks}; adjacent edges will be 90 degrees`
+            : "ROI selection canceled",
+        );
         updateCalibrationDisplay();
       });
 
+      selectExcludeButton.addEventListener("click", () => {
+        const wasActive = roiSelectionActive && roiSelectionMode === "exclude";
+        roiSelectionActive = !wasActive;
+        roiSelectionMode = "exclude";
+        roiFirstCorner = null;
+        roiDraftPoints = [];
+        excludeDraftScreenPoints = [];
+        excludeDraftClosed = false;
+        selectExcludeButton.classList.toggle("active", roiSelectionActive);
+        selectRoiButton.classList.remove("active");
+        roiStatusText = roiSelectionActive
+          ? "Exclude: left-click polygon points; right-click to close; Enter to confirm"
+          : "Exclude: selection canceled";
+        setOperationStatus(
+          roiSelectionActive
+            ? "Exclude screen polygon started: left-click points, right-click to close, then press Enter"
+            : "Exclude selection canceled",
+        );
+        updateCalibrationDisplay();
+        updateRoiOverlay();
+      });
+
       calculateVolumeButton.addEventListener("click", () => {
-        if (rois.length === 0 && !roi && !pileMask) {
+        if (!pileMask) {
           volumeDisplay.textContent = "Volume: -- m³";
-          setOperationStatus("Calculate failed: select ROI or run Auto pile first", true);
+          setOperationStatus("Calculate failed: run Cluster first", true);
           return;
         }
         pushUndoState("Calculate");
         volumeCalculationActive = true;
         showFilteredRegion = true;
         calculateVolumeButton.classList.add("active");
-        if (sourceMode === "static" || pileMask || rois.length > 0 || (roi && roi.points)) {
-          volumeDisplay.textContent = "Volume: calculating...";
-          if (sourceMode === "live" && (pileMask || rois.length > 0 || (roi && roi.points))) {
-            sendCalibrationToServer(false);
-          }
-          setOperationStatus(
-            pileMask
-              ? "Auto pile volume calculation started"
-              : rois.length > 0 || (roi && roi.points)
-                ? "ROI polygon volume calculation started"
-                : "Static volume calculation started",
-          );
-          setTimeout(() => computeBrowserVolume(true), 0);
-        } else {
-          sendCalibrationToServer(true);
-          setOperationStatus("Server volume calculation started");
+        volumeDisplay.textContent = "Volume: calculating...";
+        if (sourceMode === "live") {
+          sendCalibrationToServer(false);
         }
+        setOperationStatus("Cluster volume calculation started");
+        setTimeout(() => computeBrowserVolume(true), 0);
       });
 
       undoRoiButton.addEventListener("click", () => {
         if (roiSelectionActive) {
-          roiSelectionActive = false;
-          roiFirstCorner = null;
-          roiDraftPoints = [];
-          selectRoiButton.classList.remove("active");
-          roiStatusText = rois.length > 0 || roi ? "ROI: selection canceled; previous ROI kept" : "ROI: none";
-          updateCalibrationDisplay();
-          setOperationStatus("ROI selection canceled");
+          if (roiSelectionMode === "exclude") {
+            if (excludeDraftClosed) {
+              excludeDraftClosed = false;
+              roiStatusText =
+                `Exclude: polygon reopened with ${excludeDraftScreenPoints.length} screen points; right-click to close`;
+              setOperationStatus("Exclude close undone; right-click to close again or undo points");
+              updateCalibrationDisplay();
+              updateRoiOverlay();
+            } else if (excludeDraftScreenPoints.length > 0) {
+              excludeDraftScreenPoints.pop();
+              roiStatusText =
+                excludeDraftScreenPoints.length > 0
+                  ? `Exclude: ${excludeDraftScreenPoints.length} screen point${excludeDraftScreenPoints.length > 1 ? "s" : ""}; right-click to close, Enter to confirm`
+                  : "Exclude: left-click polygon points; right-click to close, Enter to confirm";
+              setOperationStatus("Exclude point undone");
+              updateCalibrationDisplay();
+              updateRoiOverlay();
+            } else {
+              roiSelectionActive = false;
+              roiSelectionMode = "include";
+              selectExcludeButton.classList.remove("active");
+              roiStatusText = "Exclude: selection canceled";
+              setOperationStatus("Exclude selection canceled");
+              updateCalibrationDisplay();
+              updateRoiOverlay();
+            }
+            return;
+          }
+          if (roiDraftPoints.length > 0) {
+            const removed = roiDraftPoints.pop();
+            updateRoiDraftStatus(
+              removed
+                ? `ROI point undone (${formatPoint(removed)})`
+                : "ROI point undone",
+            );
+          } else {
+            roiSelectionActive = false;
+            roiFirstCorner = null;
+            roiDraftPoints = [];
+            selectRoiButton.classList.remove("active");
+            selectExcludeButton.classList.remove("active");
+            roiStatusText = rois.length > 0 || roi ? "ROI: selection canceled; previous ROI kept" : "ROI: none";
+            updateCalibrationDisplay();
+            setOperationStatus(`${roiSelectionMode === "exclude" ? "Exclude" : "ROI"} selection canceled`);
+          }
           return;
         }
         const previous = undoStack.pop();
@@ -2571,9 +4860,72 @@
 
       clearViewerButton.addEventListener("click", clearViewerState);
 
+      flipCloudButton.addEventListener("click", () => {
+        const undoState = captureUndoState("Flip point cloud");
+        flipPointCloud = !flipPointCloud;
+        pushUndoState("Flip point cloud", undoState);
+        clearProcessingSelection();
+        reapplyPointCloudOrientation();
+        updateFlipButton();
+        sendPatchworkControl(patchworkRealtimeActive);
+        updateCalibrationDisplay();
+        sendCalibrationToServer(false);
+        setOperationStatus(
+          flipPointCloud
+            ? "Point cloud flip enabled: y/z axes inverted"
+            : "Point cloud flip disabled",
+        );
+      });
+
       filterStructureButton.addEventListener("click", filterStructure);
 
-      autoPileButton.addEventListener("click", autoDetectPile);
+      clusterButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        clusterMenu.classList.toggle("hidden");
+      });
+
+      clusterMenu.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-object-type]");
+        if (!button) {
+          return;
+        }
+        clusterMenu.classList.add("hidden");
+        autoDetectPile(button.dataset.objectType);
+      });
+
+      debugClusterButton.addEventListener("click", () => {
+        const stages = pileMask && pileMask.debugStages ? pileMask.debugStages : [];
+        if (stages.length === 0) {
+          setOperationStatus("Debug failed: run Cluster -> Stockpile first", true);
+          return;
+        }
+        if (!stockpileDebugActive) {
+          stockpileDebugActive = true;
+          stockpileDebugStageIndex = 0;
+        } else {
+          stockpileDebugStageIndex++;
+          if (stockpileDebugStageIndex >= stages.length) {
+            stockpileDebugActive = false;
+            stockpileDebugStageIndex = 0;
+          }
+        }
+        updateDebugClusterButton();
+        updateDisplayedPoints();
+        if (stockpileDebugActive) {
+          const stage = stages[stockpileDebugStageIndex % stages.length];
+          setOperationStatus(
+            `Debug stage: ${stage.name}; green=${stage.cells.size.toLocaleString()} cells, red=final cluster`,
+          );
+        } else {
+          setOperationStatus("Debug disabled");
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        if (!clusterMenu.classList.contains("hidden") && !event.target.closest(".cluster-control")) {
+          clusterMenu.classList.add("hidden");
+        }
+      });
 
       sourceSelect.addEventListener("change", () => {
         switchPointCloudSource(Number(sourceSelect.value));
@@ -2582,6 +4934,9 @@
       window.addEventListener("resize", resizeCanvas);
       setupSourceSelect();
       updateLiveButton();
+      updateFlipButton();
+      updateDebugClusterButton();
+      updateCalculateButtonState();
       updateCalibrationDisplay();
       requestAnimationFrame(render);
     </script>

@@ -29,6 +29,15 @@ rslidar_sdk-v1.5.19/log/
 pointcloud_web_tools/build/
 pointcloud_web_tools/install/
 pointcloud_web_tools/log/
+pointcloud_web_tools/build_current/
+pointcloud_web_tools/install_current/
+pointcloud_web_tools/log_current/
+patchwork-plusplus-ros/build/
+patchwork-plusplus-ros/install/
+patchwork-plusplus-ros/log/
+patchwork-plusplus-ros/build_current/
+patchwork-plusplus-ros/install_current/
+patchwork-plusplus-ros/log_current/
 unitree_lidar_ros2/build/
 unitree_lidar_ros2/install/
 unitree_lidar_ros2/log/

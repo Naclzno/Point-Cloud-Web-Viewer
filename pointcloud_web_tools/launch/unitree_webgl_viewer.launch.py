@@ -33,16 +33,20 @@ def generate_launch_description():
     volume_roi_max_x = LaunchConfiguration("volume_roi_max_x")
     volume_roi_min_y = LaunchConfiguration("volume_roi_min_y")
     volume_roi_max_y = LaunchConfiguration("volume_roi_max_y")
+    las_save_duration = LaunchConfiguration("las_save_duration")
+    las_save_path = LaunchConfiguration("las_save_path")
     ground_plane_a = LaunchConfiguration("ground_plane_a")
     ground_plane_b = LaunchConfiguration("ground_plane_b")
     ground_plane_c = LaunchConfiguration("ground_plane_c")
     ground_plane_d = LaunchConfiguration("ground_plane_d")
+    patchwork_update_hz = LaunchConfiguration("patchwork_update_hz")
     ws_port = LaunchConfiguration("ws_port")
     ws_address = LaunchConfiguration("ws_address")
     record_bag = LaunchConfiguration("record_bag")
     bag_output = LaunchConfiguration("bag_output")
     bag_duration = LaunchConfiguration("bag_duration")
     use_rviz = LaunchConfiguration("use_rviz")
+    patchwork_params_file = get_package_share_directory("patchworkpp") + "/config/params.yaml"
     rviz_config = get_package_share_directory("pointcloud_web_tools") + "/rviz/unitree_view.rviz"
 
     return LaunchDescription(
@@ -72,10 +76,13 @@ def generate_launch_description():
             DeclareLaunchArgument("volume_roi_max_x", default_value="1000.0"),
             DeclareLaunchArgument("volume_roi_min_y", default_value="-1000.0"),
             DeclareLaunchArgument("volume_roi_max_y", default_value="1000.0"),
+            DeclareLaunchArgument("las_save_duration", default_value="0.0"),
+            DeclareLaunchArgument("las_save_path", default_value=""),
             DeclareLaunchArgument("ground_plane_a", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_b", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_c", default_value="1.0"),
             DeclareLaunchArgument("ground_plane_d", default_value="0.0"),
+            DeclareLaunchArgument("patchwork_update_hz", default_value="2.0"),
             DeclareLaunchArgument("ws_port", default_value="8767"),
             DeclareLaunchArgument("ws_address", default_value="0.0.0.0"),
             DeclareLaunchArgument("record_bag", default_value="false"),
@@ -123,6 +130,7 @@ def generate_launch_description():
                 name="unitree_pointcloud_ws_server",
                 output="screen",
                 parameters=[
+                    patchwork_params_file,
                     {
                         "input_topic": cloud_topic,
                         "input_qos": input_qos,
@@ -140,10 +148,15 @@ def generate_launch_description():
                         "volume_roi_max_x": ParameterValue(volume_roi_max_x, value_type=float),
                         "volume_roi_min_y": ParameterValue(volume_roi_min_y, value_type=float),
                         "volume_roi_max_y": ParameterValue(volume_roi_max_y, value_type=float),
+                        "las_save_duration": ParameterValue(las_save_duration, value_type=float),
+                        "las_save_path": las_save_path,
                         "ground_plane_a": ParameterValue(ground_plane_a, value_type=float),
                         "ground_plane_b": ParameterValue(ground_plane_b, value_type=float),
                         "ground_plane_c": ParameterValue(ground_plane_c, value_type=float),
                         "ground_plane_d": ParameterValue(ground_plane_d, value_type=float),
+                        "patchwork_update_hz": ParameterValue(
+                            patchwork_update_hz, value_type=float
+                        ),
                         "port": ParameterValue(ws_port, value_type=int),
                         "address": ws_address,
                     }

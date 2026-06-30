@@ -48,35 +48,37 @@ In the page:
 1. Click `Fit ground` after the warehouse floor is visible. The fitted plane is
    sent to `pointcloud_ws_server` and shown as `ground_plane_a/b/c/d` launch
    parameters.
-2. Click `ROI` first if you want to limit the search area, then click four
-   corner points on the fixed `z=0` XY plane in clockwise or counter-clockwise
-   order. ROI clicks do not need to hit existing point-cloud points. Repeat this
-   to add multiple stockpile search areas. Click `Auto pile` to select the
-   largest connected elevated stockpile region inside each ROI. If no ROI is
-   active, `Auto pile` searches the full point cloud. The full point cloud
+2. Click `ROI` first if you want to limit the search area, then click three
+   points on the point-cloud mean-Z plane. The third click defines the rectangle
+   depth, and the browser generates a four-corner ROI with adjacent edges fixed
+   at 90 degrees. ROI clicks do not need to hit existing point-cloud points.
+   Repeat this to add multiple stockpile search areas. Click `Cluster` and choose
+   `Stockpile` or `Box object` to select elevated objects inside each ROI. If no
+   ROI is active, `Cluster` searches the full point cloud. The full point cloud
    remains visible while adding ROIs; ROI corner points and outlines are drawn in
-   the viewer. Filtered display starts after `Auto pile` or `Calculate`.
+   the viewer. Filtered display starts after `Cluster` or `Calculate`.
 3. Click `Calculate` to compute total volume in the browser for all selected
-   four-corner ROIs or all `Auto pile` masks. The browser uses the polygon/mask
+   rectangular ROIs or all `Cluster` masks. The browser uses the polygon/mask
    directly instead of reducing it to rectangular bounds. The top bar shows the
-   total volume, and the status bar lists each ROI or auto-pile component volume.
+   total volume, and the status bar lists each ROI or cluster component volume.
    Volume uses a robust per-cell surface estimate and local height clamping so
-   isolated devices or fixtures above the coal surface do not dominate the result.
-   Auto pile also removes narrow high linear cells and cells above a locally
-   fitted coal side surface, such as conveyor-belt or pipe structures crossing
-   into the upper part of the pile.
+   isolated devices or fixtures above the target surface do not dominate the
+   result. `Cluster -> Stockpile` also removes narrow high linear cells, estimates
+   the stockpile footprint in the XY plane, fits multiple surface patches, and
+   completes small continuous-surface gaps.
 4. Click `Undo` to restore the state before the previous completed operation.
-   Undoable operations include `Calculate`, completed manual `ROI`, `Auto pile`,
+   Undoable operations include `Calculate`, completed manual `ROI`, `Cluster`,
    `Fit ground`, `Filter structure`, and `Load LAS`.
 
 For a static `.las` file, click `Load LAS` and select the file in the browser.
 The viewer parses uncompressed LAS point records in the browser and downsamples
 only the rendered points for WebGL performance. Click `Filter structure` to
 remove high warehouse structures such as the arched roof and perimeter wall
-points. Then run `Fit ground`, optionally select one or more rough four-corner
-`ROI` areas, click `Auto pile`, and click `Calculate`. `Auto pile` selects the
-largest connected elevated stockpile region above the fitted ground plane inside
-each ROI. The volume calculation then uses the combined auto-pile masks directly.
+points. Then run `Fit ground`, optionally select one or more rough rectangular
+`ROI` areas, click `Cluster`, choose `Stockpile` or `Box object`, and click
+`Calculate`. `Cluster -> Stockpile` selects elevated stockpile regions above the
+fitted ground plane inside each ROI. The volume calculation then uses the
+combined cluster masks directly.
 The same browser-side workflow can also be used on the live WebSocket point
 cloud. `Load LAS` and `Live` are parallel input modes: opening the page does not
 connect to the WebSocket stream until `Live` is clicked. Loading a `.las` file
@@ -110,7 +112,7 @@ sends a 15-second voxel map. Override it from ROS launch with
 to stream only the newest frame. If you are using another WebSocket source that
 does not accumulate points, add `?client_map_window_seconds=15` to the web URL as
 a browser-side fallback. `Filter structure` runs on the live window before
-display, ROI, auto-pile selection, and browser volume calculation.
+display, ROI, cluster selection, and browser volume calculation.
 
 Enable stockpile volume display:
 
