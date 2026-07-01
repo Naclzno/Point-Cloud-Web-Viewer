@@ -45,6 +45,24 @@ ros2 launch pointcloud_web_tools unitree_webgl_viewer.launch.py \
   map_voxel_size:=0.05
 ```
 
+如果需要把当前环境保存成静态点云文件，增加 `las_save_duration` 和 `las_save_path`：
+
+```bash
+ros2 launch pointcloud_web_tools unitree_webgl_viewer.launch.py \
+  initialize_type:=1 \
+  work_mode:=8 \
+  serial_port:=/dev/ttyACM0 \
+  baudrate:=4000000 \
+  start_lidar_rotation:=true \
+  reset_lidar_after_set_mode:=false \
+  use_rviz:=true \
+  accumulate_map:=true \
+  map_window_seconds:=30 \
+  map_voxel_size:=0.05 \
+  las_save_duration:=1800 \
+  las_save_path:=/home/ubuntu/point-cloud-web-viewer
+```
+
 RS-LiDAR 示例：
 
 ```bash
@@ -61,15 +79,66 @@ ros2 launch pointcloud_web_tools rslidar_webgl_viewer.launch.py \
   map_voxel_size:=0.05
 ```
 
+RS-LiDAR 同样支持保存 LAS：
+
+```bash
+ros2 launch pointcloud_web_tools rslidar_webgl_viewer.launch.py \
+  use_rviz:=true \
+  accumulate_map:=true \
+  map_window_seconds:=30 \
+  map_voxel_size:=0.05 \
+  las_save_duration:=1800 \
+  las_save_path:=/home/ubuntu/point-cloud-web-viewer
+```
+
 其中：
 
 - `accumulate_map:=true` 表示后端发送滑动窗口点云，而不是单帧点云。
 - `map_window_seconds:=30` 表示保留最近 30 秒点云。
 - `map_voxel_size:=0.05` 表示滑动窗口点云的体素分辨率为 0.05 m。
+- `las_save_duration:=1800` 表示保存启动后 1800 秒内接收到的原始点云。
+- `las_save_path:=/path/to/dir` 表示保存目录，程序会自动生成 `pointcloud_<sec>_<nsec>.las`。
+- `las_save_path:=/path/to/file.las` 表示保存为指定 LAS 文件名。
 
 实时体积计算建议使用滑动窗口点云，因为单帧 16 线或小型 LiDAR 点云较稀疏，不适合稳定分割和体积计算。
 
-### 2. 启动网页
+### 2. 保存实时点云为静态 LAS
+
+保存静态点云用于后续离线分析或复现实验。保存逻辑在 `pointcloud_ws_server` 中完成：
+
+1. 启动 launch 时设置 `las_save_duration` 大于 `0`。
+2. 设置 `las_save_path` 为保存目录或 `.las` 文件路径。
+3. 后端从启动后收到第一帧点云开始采集。
+4. 采集时间达到 `las_save_duration` 后，自动写出 LAS 文件。
+5. 如果程序提前退出，会尝试保存已经采集到的部分点云。
+
+例如保存 30 分钟原始点云：
+
+```bash
+las_save_duration:=1800 \
+las_save_path:=/home/ubuntu/point-cloud-web-viewer
+```
+
+保存完成后，终端会出现类似日志：
+
+```text
+Saved LAS point cloud: /home/ubuntu/point-cloud-web-viewer/pointcloud_<sec>_<nsec>.las
+```
+
+注意：
+
+- 保存的是进入 `pointcloud_ws_server` 的原始 ROS 点云帧累积结果，不是 Web 端显示的抽稀点云。
+- `map_voxel_size` 控制 Web 滑动窗口地图分辨率，不控制 LAS 保存精度。
+- 如果不想保存点云，保持默认参数即可：
+
+```bash
+las_save_duration:=0
+las_save_path:=""
+```
+
+- `.las` 文件通常很大，项目 `.gitignore` 已忽略 `*.las`，不要把采集数据提交到 git。
+
+### 3. 启动网页
 
 ```bash
 cd ~/point-cloud-web-viewer/webgl-pointcloud-viewer
@@ -96,7 +165,7 @@ http://<ubuntu-ip>:8082/?sources=RS=8766,Unitree=8767
 
 页面只有点击 `Live` 后才会接收实时点云。`Pause live` 会暂停接收，`Clear` 会清空当前点云和处理状态。
 
-### 3. 实时点云处理步骤
+### 4. 实时点云处理步骤
 
 1. 点击 `Live`，开始接收滑动窗口点云。
 2. 如果 LiDAR 是倒装，点击 `Flip`，将点云翻转到真实世界方向。
@@ -122,6 +191,7 @@ http://<ubuntu-ip>:8082/?sources=RS=8766,Unitree=8767
 ## 静态 LAS 点云流程
 
 静态 LAS 点云适用于手持 SLAM 扫描得到的仓库完整点云。
+也可以加载上一节由实时 LiDAR 保存出来的 `.las` 文件，用于离线复查、算法调参或与实时计算结果对比。
 
 ### 1. 加载 LAS
 

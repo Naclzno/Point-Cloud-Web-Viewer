@@ -22,6 +22,8 @@ def generate_launch_description():
     volume_roi_max_x = LaunchConfiguration("volume_roi_max_x")
     volume_roi_min_y = LaunchConfiguration("volume_roi_min_y")
     volume_roi_max_y = LaunchConfiguration("volume_roi_max_y")
+    las_save_duration = LaunchConfiguration("las_save_duration")
+    las_save_path = LaunchConfiguration("las_save_path")
     ground_plane_a = LaunchConfiguration("ground_plane_a")
     ground_plane_b = LaunchConfiguration("ground_plane_b")
     ground_plane_c = LaunchConfiguration("ground_plane_c")
@@ -56,6 +58,8 @@ def generate_launch_description():
             DeclareLaunchArgument("volume_roi_max_x", default_value="1000.0"),
             DeclareLaunchArgument("volume_roi_min_y", default_value="-1000.0"),
             DeclareLaunchArgument("volume_roi_max_y", default_value="1000.0"),
+            DeclareLaunchArgument("las_save_duration", default_value="0.0"),
+            DeclareLaunchArgument("las_save_path", default_value=""),
             DeclareLaunchArgument("ground_plane_a", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_b", default_value="0.0"),
             DeclareLaunchArgument("ground_plane_c", default_value="1.0"),
@@ -99,6 +103,8 @@ def generate_launch_description():
                         "volume_roi_max_x": ParameterValue(volume_roi_max_x, value_type=float),
                         "volume_roi_min_y": ParameterValue(volume_roi_min_y, value_type=float),
                         "volume_roi_max_y": ParameterValue(volume_roi_max_y, value_type=float),
+                        "las_save_duration": ParameterValue(las_save_duration, value_type=float),
+                        "las_save_path": las_save_path,
                         "ground_plane_a": ParameterValue(ground_plane_a, value_type=float),
                         "ground_plane_b": ParameterValue(ground_plane_b, value_type=float),
                         "ground_plane_c": ParameterValue(ground_plane_c, value_type=float),
